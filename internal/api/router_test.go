@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -423,5 +424,94 @@ func TestSuperAdminReadOnly(t *testing.T) {
 	snap := doJSONRequest(t, router, http.MethodGet, "/v1/admin/snapshot", nil, humanHeaders("root", "root@molten.bot"))
 	if snap.Code != http.StatusOK {
 		t.Fatalf("expected super admin snapshot 200, got %d %s", snap.Code, snap.Body.String())
+	}
+}
+
+func TestOrganizationNameUniqueCaseInsensitive(t *testing.T) {
+	router := newTestRouter()
+	_ = createOrg(t, router, "alice", "alice@a.test", "Acme")
+
+	dup := doJSONRequest(t, router, http.MethodPost, "/v1/orgs", map[string]string{
+		"name": "  acME  ",
+	}, humanHeaders("bob", "bob@b.test"))
+	if dup.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for duplicate org name, got %d %s", dup.Code, dup.Body.String())
+	}
+	body := decodeJSONMap(t, dup.Body.Bytes())
+	if body["error"] != "org_name_exists" {
+		t.Fatalf("expected org_name_exists error, got %v", body["error"])
+	}
+}
+
+func TestBindTokenExpires(t *testing.T) {
+	st := store.NewMemoryStore()
+	waiters := longpoll.NewWaiters()
+	h := NewHandler(st, waiters, auth.NewDevHumanAuthProvider(), "", "", "molten.bot", 15*time.Minute)
+	now := time.Date(2026, 3, 3, 10, 0, 0, 0, time.UTC)
+	h.now = func() time.Time { return now }
+	router := NewRouter(h)
+
+	orgID := createOrg(t, router, "alice", "alice@a.test", "Org A")
+	createResp := doJSONRequest(t, router, http.MethodPost, "/v1/agents/bind-tokens", map[string]any{
+		"org_id": orgID,
+	}, humanHeaders("alice", "alice@a.test"))
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create bind token failed: %d %s", createResp.Code, createResp.Body.String())
+	}
+	createPayload := decodeJSONMap(t, createResp.Body.Bytes())
+	bindToken, _ := createPayload["bind_token"].(string)
+	if bindToken == "" {
+		t.Fatalf("bind token missing")
+	}
+
+	now = now.Add(16 * time.Minute)
+	redeemResp := doJSONRequest(t, router, http.MethodPost, "/v1/agents/bind/redeem", map[string]string{
+		"bind_token": bindToken,
+		"agent_id":   "expired-agent",
+	}, nil)
+	if redeemResp.Code != http.StatusBadRequest {
+		t.Fatalf("expected expired bind token 400, got %d %s", redeemResp.Code, redeemResp.Body.String())
+	}
+	redeemPayload := decodeJSONMap(t, redeemResp.Body.Bytes())
+	if redeemPayload["error"] != "bind_expired" {
+		t.Fatalf("expected bind_expired, got %v", redeemPayload["error"])
+	}
+}
+
+func TestOpenAPIYAMLHeaders(t *testing.T) {
+	router := newTestRouter()
+	req := httptest.NewRequest(http.MethodGet, "/openapi.yaml", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("openapi failed: %d %s", resp.Code, resp.Body.String())
+	}
+	contentType := resp.Header().Get("Content-Type")
+	if !strings.HasPrefix(contentType, "application/yaml") {
+		t.Fatalf("expected application/yaml content type, got %q", contentType)
+	}
+	disposition := resp.Header().Get("Content-Disposition")
+	if !strings.Contains(disposition, "inline") {
+		t.Fatalf("expected inline content disposition, got %q", disposition)
+	}
+}
+
+func TestAdminSnapshotDoesNotLeakMessagePayloads(t *testing.T) {
+	router := newTestRouter()
+	_, _, tokenA, _, _, _ := setupTrustedAgents(t, router)
+	secretPayload := "top-secret-payload-should-not-appear"
+
+	pub := publish(t, router, tokenA, "agent-b", secretPayload)
+	if pub.Code != http.StatusAccepted {
+		t.Fatalf("publish failed: %d %s", pub.Code, pub.Body.String())
+	}
+
+	snap := doJSONRequest(t, router, http.MethodGet, "/v1/admin/snapshot", nil, humanHeaders("root", "root@molten.bot"))
+	if snap.Code != http.StatusOK {
+		t.Fatalf("snapshot failed: %d %s", snap.Code, snap.Body.String())
+	}
+	bodyText := snap.Body.String()
+	if strings.Contains(bodyText, secretPayload) || strings.Contains(bodyText, "\"payload\"") {
+		t.Fatalf("snapshot should not include message payload data: %s", bodyText)
 	}
 }

@@ -16,7 +16,7 @@
 ```
 
 - Success (queued): `202` with `{ "message_id": "...", "status": "queued" }`
-- Success (dropped): `202` with `{ "status": "dropped", "reason": "no_active_bond" }`
+- Success (dropped): `202` with `{ "status": "dropped", "reason": "no_trust_path" }`
 - Common errors: `401`, `404`.
 
 ## Pull

@@ -1,6 +1,6 @@
 ---
 name: openclaw-exchange-messages
-description: Validate strict full round-trip messaging between two OpenClaw agents over the local Statocyst HTTP bus. Use when proving bonded A->B and B->A delivery.
+description: Validate strict full round-trip messaging between two OpenClaw agents over Statocyst when org+agent trust is already active.
 ---
 
 # OpenClaw Exchange Messages
