@@ -23,7 +23,7 @@ if [[ $# -lt 7 || $# -gt 8 ]]; then
   exit 1
 fi
 
-for cmd in curl python3; do
+for cmd in curl node; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "ERROR: missing required command: $cmd" >&2
     exit 1
@@ -44,11 +44,7 @@ if ! [[ "$pull_timeout_ms" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-start_ns="$(python3 - <<'PY'
-import time
-print(time.time_ns())
-PY
-)"
+start_ms="$(date +%s%3N)"
 
 publish_tmp="$(mktemp)"
 pull_tmp="$(mktemp)"
@@ -60,16 +56,13 @@ publish_message() {
   local payload="$3"
 
   local payload_json
-  payload_json="$(python3 - "$to_agent_id" "$payload" <<'PY'
-import json
-import sys
-print(json.dumps({
-    "to_agent_id": sys.argv[1],
-    "content_type": "text/plain",
-    "payload": sys.argv[2],
-}))
-PY
-)"
+  payload_json="$(node -e '
+console.log(JSON.stringify({
+  to_agent_id: process.argv[1],
+  content_type: "text/plain",
+  payload: process.argv[2],
+}));
+' "$to_agent_id" "$payload")"
 
   local status
   status="$(curl -sS -o "$publish_tmp" -w "%{http_code}" \
@@ -80,26 +73,20 @@ PY
 
   if [[ "$status" != "202" ]]; then
     local excerpt
-    excerpt="$(python3 - "$publish_tmp" <<'PY'
-import pathlib
-import sys
-print(pathlib.Path(sys.argv[1]).read_text(errors="replace")[:300])
-PY
-)"
+    excerpt="$(node -e 'const fs=require("fs"); const t=fs.readFileSync(process.argv[1],"utf8"); console.log(t.slice(0,300));' "$publish_tmp")"
     echo "ERROR: publish failed (HTTP $status): $excerpt" >&2
     exit 1
   fi
 
-  python3 - "$publish_tmp" <<'PY'
-import json
-import sys
-with open(sys.argv[1], "r", encoding="utf-8") as fh:
-    payload = json.load(fh)
-message_id = payload.get("message_id")
-if not message_id:
-    raise SystemExit("missing message_id in publish response")
-print(message_id)
-PY
+  node -e '
+const fs = require("fs");
+const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+if (!payload.message_id) {
+  console.error("missing message_id in publish response");
+  process.exit(1);
+}
+console.log(payload.message_id);
+' "$publish_tmp"
 }
 
 pull_and_verify() {
@@ -114,30 +101,25 @@ pull_and_verify() {
 
   if [[ "$status" != "200" ]]; then
     local excerpt
-    excerpt="$(python3 - "$pull_tmp" <<'PY'
-import pathlib
-import sys
-print(pathlib.Path(sys.argv[1]).read_text(errors="replace")[:300])
-PY
-)"
+    excerpt="$(node -e 'const fs=require("fs"); const t=fs.readFileSync(process.argv[1],"utf8"); console.log(t.slice(0,300));' "$pull_tmp")"
     echo "ERROR: pull failed (HTTP $status): $excerpt" >&2
     exit 1
   fi
 
-  python3 - "$pull_tmp" "$expected_from" "$expected_payload" <<'PY'
-import json
-import sys
-with open(sys.argv[1], "r", encoding="utf-8") as fh:
-    payload = json.load(fh)
-message = payload.get("message", {})
-actual_from = message.get("from_agent_id")
-actual_payload = message.get("payload")
-if actual_from != sys.argv[2]:
-    raise SystemExit(f"pull verification failed: expected from_agent_id={sys.argv[2]!r}, got {actual_from!r}")
-if actual_payload != sys.argv[3]:
-    raise SystemExit(f"pull verification failed: expected payload={sys.argv[3]!r}, got {actual_payload!r}")
-print(message.get("message_id", ""))
-PY
+  node -e '
+const fs = require("fs");
+const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const message = payload.message || {};
+if (message.from_agent_id !== process.argv[2]) {
+  console.error(`pull verification failed: expected from_agent_id=${JSON.stringify(process.argv[2])}, got ${JSON.stringify(message.from_agent_id)}`);
+  process.exit(1);
+}
+if (message.payload !== process.argv[3]) {
+  console.error(`pull verification failed: expected payload=${JSON.stringify(process.argv[3])}, got ${JSON.stringify(message.payload)}`);
+  process.exit(1);
+}
+console.log(message.message_id || "");
+' "$pull_tmp" "$expected_from" "$expected_payload"
 }
 
 msg_id_a_to_b="$(publish_message "$agent_a_token" "$agent_b_id" "$msg_a_to_b")"
@@ -145,23 +127,16 @@ pulled_a_to_b="$(pull_and_verify "$agent_b_token" "$agent_a_id" "$msg_a_to_b")"
 msg_id_b_to_a="$(publish_message "$agent_b_token" "$agent_a_id" "$msg_b_to_a")"
 pulled_b_to_a="$(pull_and_verify "$agent_a_token" "$agent_b_id" "$msg_b_to_a")"
 
-end_ns="$(python3 - <<'PY'
-import time
-print(time.time_ns())
-PY
-)"
+end_ms="$(date +%s%3N)"
 
-python3 - "$msg_id_a_to_b" "$pulled_a_to_b" "$msg_id_b_to_a" "$pulled_b_to_a" "$start_ns" "$end_ns" <<'PY'
-import json
-import sys
-msg_id_a_to_b, pulled_a_to_b, msg_id_b_to_a, pulled_b_to_a, start_ns, end_ns = sys.argv[1:]
-result = {
-    "status": "ok",
-    "a_to_b_publish_message_id": msg_id_a_to_b,
-    "a_to_b_pulled_message_id": pulled_a_to_b,
-    "b_to_a_publish_message_id": msg_id_b_to_a,
-    "b_to_a_pulled_message_id": pulled_b_to_a,
-    "elapsed_ms": int((int(end_ns) - int(start_ns)) / 1_000_000),
-}
-print(json.dumps(result))
-PY
+node -e '
+const result = {
+  status: "ok",
+  a_to_b_publish_message_id: process.argv[1],
+  a_to_b_pulled_message_id: process.argv[2],
+  b_to_a_publish_message_id: process.argv[3],
+  b_to_a_pulled_message_id: process.argv[4],
+  elapsed_ms: Number(process.argv[6]) - Number(process.argv[5]),
+};
+console.log(JSON.stringify(result));
+' "$msg_id_a_to_b" "$pulled_a_to_b" "$msg_id_b_to_a" "$pulled_b_to_a" "$start_ms" "$end_ms"

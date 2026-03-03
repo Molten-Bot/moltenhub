@@ -1,4 +1,4 @@
-FROM moltenbot/openclaw:2026.3.1 AS builder
+FROM moltenbot/openclaw:2026.3.2 AS builder
 
 
 # Install additional npm packages globally
@@ -93,7 +93,7 @@ RUN chmod 700 /home/moltenbot/.openclaw/credentials
 ENV NODE_OPTIONS="--no-deprecation"
 # Set environment variables for OpenClaw
 ENV NODE_ENV=production
-ENV OPENCLAW_VERSION=moltenbot
+ENV OPENCLAW_VERSION=shrimp
 ENV OPENCLAW_TIER=code
 
 # Expose ports:

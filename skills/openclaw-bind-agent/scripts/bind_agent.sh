@@ -19,7 +19,7 @@ if [[ $# -lt 3 || $# -gt 4 ]]; then
   exit 1
 fi
 
-for cmd in curl python3; do
+for cmd in curl node; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "ERROR: missing required command: $cmd" >&2
     exit 1
@@ -35,12 +35,7 @@ register_tmp="$(mktemp)"
 allow_tmp="$(mktemp)"
 trap 'rm -f "$register_tmp" "$allow_tmp"' EXIT
 
-register_payload="$(python3 - "$agent_id" <<'PY'
-import json
-import sys
-print(json.dumps({"agent_id": sys.argv[1]}))
-PY
-)"
+register_payload="$(node -e 'console.log(JSON.stringify({agent_id: process.argv[1]}))' "$agent_id")"
 
 register_status="$(curl -sS -o "$register_tmp" -w "%{http_code}" \
   -X POST "$base_url/v1/agents/register" \
@@ -48,27 +43,12 @@ register_status="$(curl -sS -o "$register_tmp" -w "%{http_code}" \
   --data "$register_payload")"
 
 if [[ "$register_status" != "201" ]]; then
-  excerpt="$(python3 - "$register_tmp" <<'PY'
-import pathlib
-import sys
-print(pathlib.Path(sys.argv[1]).read_text(errors="replace")[:300])
-PY
-)"
+  excerpt="$(node -e 'const fs=require("fs"); const t=fs.readFileSync(process.argv[1],"utf8"); console.log(t.slice(0,300));' "$register_tmp")"
   echo "ERROR: register failed (HTTP $register_status): $excerpt" >&2
   exit 1
 fi
 
-token="$(python3 - "$register_tmp" <<'PY'
-import json
-import sys
-with open(sys.argv[1], "r", encoding="utf-8") as fh:
-    payload = json.load(fh)
-token = payload.get("token")
-if not token:
-    raise SystemExit("missing token in register response")
-print(token)
-PY
-)"
+token="$(node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(!p.token){console.error("missing token in register response"); process.exit(1);} console.log(p.token);' "$register_tmp")"
 
 if [[ "$token_output_file" == "-" ]]; then
   printf '%s\n' "$token"
@@ -77,12 +57,7 @@ else
   printf '%s\n' "$token" > "$token_output_file"
 fi
 
-allow_payload="$(python3 - "$from_agent_id" <<'PY'
-import json
-import sys
-print(json.dumps({"from_agent_id": sys.argv[1]}))
-PY
-)"
+allow_payload="$(node -e 'console.log(JSON.stringify({from_agent_id: process.argv[1]}))' "$from_agent_id")"
 
 allow_status="$(curl -sS -o "$allow_tmp" -w "%{http_code}" \
   -X POST "$base_url/v1/agents/$agent_id/allow-inbound" \
@@ -91,12 +66,7 @@ allow_status="$(curl -sS -o "$allow_tmp" -w "%{http_code}" \
   --data "$allow_payload")"
 
 if [[ "$allow_status" != "200" ]]; then
-  excerpt="$(python3 - "$allow_tmp" <<'PY'
-import pathlib
-import sys
-print(pathlib.Path(sys.argv[1]).read_text(errors="replace")[:300])
-PY
-)"
+  excerpt="$(node -e 'const fs=require("fs"); const t=fs.readFileSync(process.argv[1],"utf8"); console.log(t.slice(0,300));' "$allow_tmp")"
   echo "ERROR: allow-inbound failed (HTTP $allow_status): $excerpt" >&2
   exit 1
 fi
@@ -104,16 +74,13 @@ fi
 if [[ "$token_output_file" == "-" ]]; then
   echo "OK: registered $agent_id and allowed inbound from $from_agent_id" >&2
 else
-  python3 - "$agent_id" "$from_agent_id" "$token_output_file" <<'PY'
-import json
-import sys
-agent_id, from_agent_id, token_target = sys.argv[1], sys.argv[2], sys.argv[3]
-result = {
-    "status": "ok",
-    "agent_id": agent_id,
-    "allowed_from_agent_id": from_agent_id,
-    "token_file": token_target,
-}
-print(json.dumps(result))
-PY
+  node -e '
+const result = {
+  status: "ok",
+  agent_id: process.argv[1],
+  allowed_from_agent_id: process.argv[2],
+  token_file: process.argv[3],
+};
+console.log(JSON.stringify(result));
+' "$agent_id" "$from_agent_id" "$token_output_file"
 fi
