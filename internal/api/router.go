@@ -11,6 +11,7 @@ import (
 
 	"statocyst/internal/auth"
 	"statocyst/internal/longpoll"
+	"statocyst/internal/model"
 	"statocyst/internal/store"
 )
 
@@ -22,28 +23,62 @@ const (
 var agentIDRegex = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
 type Handler struct {
-	store   *store.MemoryStore
-	waiters *longpoll.Waiters
-	now     func() time.Time
+	store             *store.MemoryStore
+	waiters           *longpoll.Waiters
+	humanAuth         auth.HumanAuthProvider
+	now               func() time.Time
+	idFactory         func() (string, error)
+	supabaseURL       string
+	supabaseAnonKey   string
+	superAdminDomains map[string]struct{}
+	bindTokenTTL      time.Duration
 }
 
-func NewHandler(st *store.MemoryStore, waiters *longpoll.Waiters) *Handler {
+type humanActor struct {
+	Human        model.Human
+	IsSuperAdmin bool
+}
+
+func NewHandler(st *store.MemoryStore, waiters *longpoll.Waiters, humanAuth auth.HumanAuthProvider, supabaseURL, supabaseAnonKey, superAdminDomainsCSV string, bindTokenTTL time.Duration) *Handler {
+	if bindTokenTTL <= 0 {
+		bindTokenTTL = 15 * time.Minute
+	}
 	return &Handler{
-		store:   st,
-		waiters: waiters,
-		now:     time.Now,
+		store:             st,
+		waiters:           waiters,
+		humanAuth:         humanAuth,
+		now:               time.Now,
+		idFactory:         newUUIDv7,
+		supabaseURL:       strings.TrimSpace(supabaseURL),
+		supabaseAnonKey:   strings.TrimSpace(supabaseAnonKey),
+		superAdminDomains: parseDomains(superAdminDomainsCSV),
+		bindTokenTTL:      bindTokenTTL,
 	}
 }
 
 func NewRouter(handler *Handler) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/health", handler.handleHealthz)
 	mux.HandleFunc("/healthz", handler.handleHealthz)
 	mux.HandleFunc("/openapi.yaml", handler.handleOpenAPIYAML)
-	mux.HandleFunc("/v1/agents/register", handler.handleRegister)
-	mux.HandleFunc("/v1/bonds", handler.handleBonds)
-	mux.HandleFunc("/v1/bonds/", handler.handleBondByID)
+	mux.HandleFunc("/v1/ui/config", handler.handleUIConfig)
+	mux.HandleFunc("/v1/me", handler.handleMe)
+	mux.HandleFunc("/v1/me/orgs", handler.handleMyOrgs)
+	mux.HandleFunc("/v1/admin/snapshot", handler.handleAdminSnapshot)
+	mux.HandleFunc("/v1/orgs", handler.handleOrgs)
+	mux.HandleFunc("/v1/orgs/", handler.handleOrgSubroutes)
+	mux.HandleFunc("/v1/org-invites/", handler.handleOrgInvites)
+	mux.HandleFunc("/v1/agents/bind-tokens", handler.handleCreateBindToken)
+	mux.HandleFunc("/v1/agents/bind/redeem", handler.handleRedeemBindToken)
+	mux.HandleFunc("/v1/agents/register", handler.handleRegisterAgent)
+	mux.HandleFunc("/v1/agents/", handler.handleAgentsSubroutes)
+	mux.HandleFunc("/v1/org-trusts", handler.handleOrgTrusts)
+	mux.HandleFunc("/v1/org-trusts/", handler.handleOrgTrustByID)
+	mux.HandleFunc("/v1/agent-trusts", handler.handleAgentTrusts)
+	mux.HandleFunc("/v1/agent-trusts/", handler.handleAgentTrustByID)
 	mux.HandleFunc("/v1/messages/publish", handler.handlePublish)
 	mux.HandleFunc("/v1/messages/pull", handler.handlePull)
+	mux.HandleFunc("/", handler.handleUI)
 	return mux
 }
 
@@ -83,27 +118,6 @@ func validateAgentID(agentID string) bool {
 	return agentIDRegex.MatchString(agentID)
 }
 
-func parseBondIDPath(path string) (string, bool) {
-	const prefix = "/v1/bonds/"
-	if !strings.HasPrefix(path, prefix) {
-		return "", false
-	}
-	trimmed := strings.TrimPrefix(path, prefix)
-	if trimmed == "" || strings.Contains(trimmed, "/") {
-		return "", false
-	}
-	return trimmed, true
-}
-
-func (h *Handler) authenticateAgent(r *http.Request) (string, error) {
-	token, err := auth.ExtractBearerToken(r.Header.Get("Authorization"))
-	if err != nil {
-		return "", err
-	}
-	tokenHash := auth.HashToken(token)
-	return h.store.AgentIDForTokenHash(tokenHash)
-}
-
 func parsePullTimeout(r *http.Request) (time.Duration, error) {
 	raw := strings.TrimSpace(r.URL.Query().Get("timeout_ms"))
 	if raw == "" {
@@ -117,4 +131,71 @@ func parsePullTimeout(r *http.Request) (time.Duration, error) {
 		return 0, errors.New("timeout_ms must be in range 0..30000")
 	}
 	return time.Duration(ms) * time.Millisecond, nil
+}
+
+func (h *Handler) authenticateHuman(r *http.Request) (humanActor, error) {
+	identity, err := h.humanAuth.Authenticate(r)
+	if err != nil {
+		return humanActor{}, err
+	}
+	human, err := h.store.UpsertHuman(identity.Provider, identity.Subject, identity.Email, identity.EmailVerified, h.now().UTC(), h.idFactory)
+	if err != nil {
+		return humanActor{}, err
+	}
+	return humanActor{
+		Human:        human,
+		IsSuperAdmin: h.isSuperAdmin(identity),
+	}, nil
+}
+
+func (h *Handler) authenticateAgent(r *http.Request) (string, error) {
+	token, err := auth.ExtractBearerToken(r.Header.Get("Authorization"))
+	if err != nil {
+		return "", err
+	}
+	tokenHash := auth.HashToken(token)
+	return h.store.AgentIDForTokenHash(tokenHash)
+}
+
+func splitPath(path string) []string {
+	trimmed := strings.Trim(path, "/")
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "/")
+}
+
+func parseDomains(csv string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, raw := range strings.Split(csv, ",") {
+		d := strings.ToLower(strings.TrimSpace(raw))
+		if d == "" {
+			continue
+		}
+		if strings.HasPrefix(d, "@") {
+			d = strings.TrimPrefix(d, "@")
+		}
+		out[d] = struct{}{}
+	}
+	return out
+}
+
+func (h *Handler) isSuperAdmin(identity auth.HumanIdentity) bool {
+	if !identity.EmailVerified {
+		return false
+	}
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(identity.Email)), "@")
+	if len(parts) != 2 {
+		return false
+	}
+	_, ok := h.superAdminDomains[parts[1]]
+	return ok
+}
+
+func (h *Handler) denySuperAdminWrite(w http.ResponseWriter, actor humanActor) bool {
+	if actor.IsSuperAdmin {
+		writeError(w, http.StatusForbidden, "super_admin_read_only", "super admin is read-only")
+		return true
+	}
+	return false
 }
