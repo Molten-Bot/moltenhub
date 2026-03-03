@@ -160,3 +160,52 @@ Run inside the existing `multi-agent` statocyst container:
 ```bash
 docker exec multi-agent-statocyst-1 sh -lc 'cd /app && /usr/local/go/bin/go test ./...'
 ```
+
+## Release Pipeline (GitHub Actions + Cloudflare Apps)
+
+No domain names are hardcoded in application code. Domain/app targeting is configured in GitHub environments and secrets.
+
+### Workflows
+
+- `.github/workflows/ci.yml`
+  - Runs tests and a Docker build check on PRs and `main`.
+- `.github/workflows/deploy-qa.yml`
+  - Auto deploy on pushes to `main`.
+  - Builds and pushes image tags:
+    - `ghcr.io/<owner>/statocyst:qa-<sha>`
+    - `ghcr.io/<owner>/statocyst:qa-latest`
+  - Triggers QA deploy hook.
+- `.github/workflows/deploy-prod.yml`
+  - Manual only (`workflow_dispatch`), guarded to `main`.
+  - Builds and pushes image tags:
+    - `ghcr.io/<owner>/statocyst:prod-<sha>`
+    - `ghcr.io/<owner>/statocyst:latest`
+  - Triggers Prod deploy hook.
+
+### GitHub Environment Setup
+
+Create environments:
+- `qa`
+- `prod`
+
+For each environment, set:
+- Secret `DEPLOY_HOOK_URL`
+  - Cloudflare app deploy endpoint/webhook for that environment.
+- Optional secret `DEPLOY_HOOK_BEARER_TOKEN`
+  - If your deploy endpoint requires bearer auth.
+- Optional variable `HEALTHCHECK_URL`
+  - Example values:
+    - QA: `https://hub.molten-qa.site/health`
+    - Prod: `https://hub.molten.bot/health`
+
+### Deploy Hook Contract
+
+The workflow posts JSON to your deploy hook with:
+- `service`
+- `environment`
+- `image_ref`
+- `git_sha`
+
+If your Cloudflare-side deploy hook ignores JSON payload, configure your deploy target to pull:
+- QA: `qa-latest`
+- Prod: `latest`
