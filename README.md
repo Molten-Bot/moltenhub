@@ -161,7 +161,7 @@ Run inside the existing `multi-agent` statocyst container:
 docker exec multi-agent-statocyst-1 sh -lc 'cd /app && /usr/local/go/bin/go test ./...'
 ```
 
-## Release Pipeline (GitHub Actions + Cloudflare Apps)
+## Release Pipeline (GitHub Actions + Generic Deploy Targets)
 
 No domain names are hardcoded in application code. Domain/app targeting is configured in GitHub environments and secrets.
 
@@ -172,15 +172,21 @@ No domain names are hardcoded in application code. Domain/app targeting is confi
 - `.github/workflows/deploy-qa.yml`
   - Auto deploy on pushes to `main`.
   - Builds and pushes image tags:
-    - `ghcr.io/<owner>/statocyst:qa-<sha>`
-    - `ghcr.io/<owner>/statocyst:qa-latest`
+    - `docker.io/<dockerhub-username>/statocyst:qa-<sha>`
+    - `docker.io/<dockerhub-username>/statocyst:qa-latest`
   - Triggers QA deploy hook.
 - `.github/workflows/deploy-prod.yml`
   - Manual only (`workflow_dispatch`), guarded to `main`.
   - Builds and pushes image tags:
-    - `ghcr.io/<owner>/statocyst:prod-<sha>`
-    - `ghcr.io/<owner>/statocyst:latest`
+    - `docker.io/<dockerhub-username>/statocyst:prod-<sha>`
+    - `docker.io/<dockerhub-username>/statocyst:latest`
   - Triggers Prod deploy hook.
+
+### Docker Hub Credentials (for build/push)
+
+Set in GitHub:
+- `DOCKERHUB_TOKEN` (secret, required)
+- `DOCKERHUB_USERNAME` (repository variable recommended; secret also supported)
 
 ### GitHub Environment Setup
 
@@ -190,7 +196,7 @@ Create environments:
 
 For each environment, set:
 - Secret `DEPLOY_HOOK_URL`
-  - Cloudflare app deploy endpoint/webhook for that environment.
+  - Deploy endpoint/webhook for that environment (any provider).
 - Optional secret `DEPLOY_HOOK_BEARER_TOKEN`
   - If your deploy endpoint requires bearer auth.
 - Optional variable `HEALTHCHECK_URL`
@@ -206,6 +212,6 @@ The workflow posts JSON to your deploy hook with:
 - `image_ref`
 - `git_sha`
 
-If your Cloudflare-side deploy hook ignores JSON payload, configure your deploy target to pull:
+If your deploy hook ignores JSON payload, configure your target runtime to pull:
 - QA: `qa-latest`
 - Prod: `latest`
