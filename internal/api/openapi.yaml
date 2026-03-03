@@ -1,0 +1,300 @@
+openapi: 3.0.3
+info:
+  title: Statocyst Local Bus API
+  version: 0.2.0
+  description: In-memory local POC for bonded agent messaging.
+servers:
+  - url: http://localhost:8080
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+  /v1/agents/register:
+    post:
+      summary: Register an agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Duplicate agent ID
+  /v1/bonds:
+    post:
+      summary: Create or join a bond with a peer
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBondRequest'
+      responses:
+        '201':
+          description: Bond created (pending)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BondResponse'
+        '200':
+          description: Existing bond joined or already active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BondResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Peer unknown
+  /v1/bonds/{id}:
+    delete:
+      summary: Delete a bond by ID
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  bond_id:
+                    type: string
+                  result:
+                    type: string
+                    example: deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Caller is not a participant
+        '404':
+          description: Bond not found
+  /v1/messages/publish:
+    post:
+      summary: Publish message to an agent
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishRequest'
+      responses:
+        '202':
+          description: Queued or dropped
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/PublishQueuedResponse'
+                  - $ref: '#/components/schemas/PublishDroppedResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown receiver
+  /v1/messages/pull:
+    get:
+      summary: Pull one message with long-poll
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: timeout_ms
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 30000
+            default: 5000
+      responses:
+        '200':
+          description: Message returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    $ref: '#/components/schemas/Message'
+        '204':
+          description: No message before timeout
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: token
+  responses:
+    BadRequest:
+      description: Invalid request
+    Unauthorized:
+      description: Missing or invalid bearer token
+  schemas:
+    RegisterRequest:
+      type: object
+      required:
+        - agent_id
+      properties:
+        agent_id:
+          type: string
+    RegisterResponse:
+      type: object
+      required:
+        - agent_id
+        - token
+      properties:
+        agent_id:
+          type: string
+        token:
+          type: string
+    CreateBondRequest:
+      type: object
+      required:
+        - peer_agent_id
+      properties:
+        peer_agent_id:
+          type: string
+    Bond:
+      type: object
+      required:
+        - bond_id
+        - agent_a_id
+        - agent_b_id
+        - state
+        - created_at
+      properties:
+        bond_id:
+          type: string
+        agent_a_id:
+          type: string
+        agent_b_id:
+          type: string
+        state:
+          type: string
+          enum: [pending, active]
+        created_at:
+          type: string
+          format: date-time
+        activated_at:
+          type: string
+          format: date-time
+          nullable: true
+    BondResponse:
+      type: object
+      required:
+        - status
+        - created
+        - bond
+      properties:
+        status:
+          type: string
+          example: ok
+        created:
+          type: boolean
+        bond:
+          $ref: '#/components/schemas/Bond'
+    PublishRequest:
+      type: object
+      required:
+        - to_agent_id
+        - content_type
+        - payload
+      properties:
+        to_agent_id:
+          type: string
+        content_type:
+          type: string
+          enum: [text/plain, application/json]
+        payload:
+          type: string
+        client_msg_id:
+          type: string
+    PublishQueuedResponse:
+      type: object
+      required:
+        - message_id
+        - status
+      properties:
+        message_id:
+          type: string
+        status:
+          type: string
+          example: queued
+    PublishDroppedResponse:
+      type: object
+      required:
+        - status
+        - reason
+      properties:
+        status:
+          type: string
+          example: dropped
+        reason:
+          type: string
+          example: no_active_bond
+    Message:
+      type: object
+      required:
+        - message_id
+        - from_agent_id
+        - to_agent_id
+        - content_type
+        - payload
+        - created_at
+      properties:
+        message_id:
+          type: string
+        from_agent_id:
+          type: string
+        to_agent_id:
+          type: string
+        content_type:
+          type: string
+        payload:
+          type: string
+        client_msg_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
