@@ -1,5 +1,7 @@
 const UI = StatocystUI;
 
+let currentHumanID = "";
+
 function selectedOrg() {
   return UI.selectedOrg("orgSelect");
 }
@@ -16,6 +18,19 @@ function setMuted(id, message) {
   if (!el) return;
   el.textContent = message;
   el.className = "muted";
+}
+
+function setInviteCodeStatus(message, warn = false) {
+  const el = UI.$("inviteCodeStatus");
+  if (!el) return;
+  if (!message) {
+    el.style.display = "none";
+    el.textContent = "";
+    return;
+  }
+  el.style.display = "block";
+  el.textContent = message;
+  el.className = warn ? "status warn" : "status";
 }
 
 function requireOrg(statusID, message = "Select an organization first.") {
@@ -44,6 +59,29 @@ function escapeHTML(input) {
     .replace(/>/g, "&gt;")
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function formatDateTime(raw) {
+  if (!raw) return "unknown";
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return "unknown";
+  return d.toLocaleString();
+}
+
+function titleCaseInviteStatus(status) {
+  const v = String(status || "").toLowerCase();
+  if (v === "pending") return "Pending";
+  if (v === "active") return "Accepted";
+  if (v === "revoked") return "Revoked";
+  if (v === "expired") return "Expired";
+  return v || "Unknown";
+}
+
+async function loadCurrentHuman() {
+  const res = await UI.req("/v1/me");
+  if (res.status === 200) {
+    currentHumanID = String(res?.data?.human?.human_id || "");
+  }
 }
 
 async function listOrgs(preserveCurrent = true) {
@@ -93,10 +131,12 @@ async function listOrgs(preserveCurrent = true) {
     await refreshOrgData();
   } else {
     renderHumans([]);
+    renderOrgInvites([]);
     renderTrusts([]);
     renderAudit([]);
     renderStats(null);
     renderAccessKeys([]);
+    setInviteCodeStatus("");
   }
 }
 
@@ -129,16 +169,93 @@ async function inviteHuman() {
     return;
   }
 
-  setStatus("inviteStatus", "Sending invite...");
+  setStatus("inviteStatus", "Creating invite code...");
+  setInviteCodeStatus("");
   const res = await UI.req(`/v1/orgs/${orgID}/invites`, "POST", { email, role });
   if (res.status !== 201) {
     setStatus("inviteStatus", "Could not create invite.", true);
+    setInviteCodeStatus("Invite creation failed.", true);
     return;
   }
 
   UI.$("inviteEmail").value = "";
-  setStatus("inviteStatus", `Invite sent to ${email}.`);
-  await loadHumans();
+  const invite = res.data?.invite || {};
+  const inviteCode = String(res.data?.invite_code || "");
+  setStatus("inviteStatus", `Invite created for ${email}.`);
+  if (inviteCode) {
+    setInviteCodeStatus(`Share this code with ${email}: ${inviteCode} (expires ${formatDateTime(invite.expires_at)}).`);
+  }
+  await Promise.all([loadOrgInvites(), loadHumans()]);
+}
+
+function renderOrgInvites(invites) {
+  const root = UI.$("orgInvitesList");
+  root.innerHTML = "";
+
+  if (!Array.isArray(invites) || invites.length === 0) {
+    setMuted("orgInvitesStatus", "No invites yet.");
+    return;
+  }
+
+  setMuted("orgInvitesStatus", `${invites.length} invite(s).`);
+  for (const invite of invites) {
+    const card = document.createElement("div");
+    card.className = "rowItem";
+
+    const title = document.createElement("div");
+    title.className = "rowTitle";
+    title.textContent = `${invite.email || "(email missing)"} • ${invite.role || "member"}`;
+
+    const meta = document.createElement("div");
+    meta.className = "rowMeta";
+    meta.textContent = `${titleCaseInviteStatus(invite.status)} • Created ${formatDateTime(invite.created_at)} • Expires ${formatDateTime(invite.expires_at)}`;
+
+    card.appendChild(title);
+    card.appendChild(meta);
+
+    if (String(invite.status).toLowerCase() === "pending") {
+      const revokeBtn = document.createElement("button");
+      revokeBtn.type = "button";
+      revokeBtn.className = "smallBtn";
+      revokeBtn.textContent = "Revoke Invite";
+      revokeBtn.dataset.revokeInviteId = invite.invite_id || "";
+      card.appendChild(revokeBtn);
+    }
+
+    root.appendChild(card);
+  }
+}
+
+async function loadOrgInvites() {
+  const orgID = requireOrg("orgInvitesStatus", "Select an organization to load invites.");
+  if (!orgID) {
+    renderOrgInvites([]);
+    return;
+  }
+
+  setMuted("orgInvitesStatus", "Loading invites...");
+  const res = await UI.req(`/v1/orgs/${orgID}/invites`);
+  if (res.status !== 200) {
+    setMuted("orgInvitesStatus", "Could not load invites.");
+    renderOrgInvites([]);
+    return;
+  }
+
+  renderOrgInvites(res.data?.invites || []);
+}
+
+async function revokeInvite(inviteID) {
+  if (!inviteID) return;
+
+  setStatus("inviteStatus", "Revoking invite...");
+  const res = await UI.req(`/v1/org-invites/${inviteID}`, "DELETE");
+  if (res.status !== 200) {
+    setStatus("inviteStatus", "Could not revoke invite.", true);
+    return;
+  }
+
+  setStatus("inviteStatus", "Invite revoked.");
+  await loadOrgInvites();
 }
 
 function renderHumans(humans) {
@@ -151,19 +268,41 @@ function renderHumans(humans) {
   }
 
   setMuted("humansStatus", `${humans.length} human(s) in this organization.`);
-  const ul = document.createElement("ul");
-  ul.className = "list";
   for (const h of humans) {
-    const li = document.createElement("li");
-    li.textContent = `${h.email} (${h.role})`;
-    ul.appendChild(li);
+    const card = document.createElement("div");
+    card.className = "rowItem";
+
+    const title = document.createElement("div");
+    title.className = "rowTitle";
+    title.textContent = h.email || h.human_id || "unknown";
+
+    const meta = document.createElement("div");
+    meta.className = "rowMeta";
+    meta.textContent = `${h.role || "unknown"} • ${h.status || "unknown"} • ${h.auth_provider || "unknown provider"}`;
+
+    card.appendChild(title);
+    card.appendChild(meta);
+
+    if (h.role !== "owner" && h.human_id !== currentHumanID) {
+      const revokeBtn = document.createElement("button");
+      revokeBtn.type = "button";
+      revokeBtn.className = "smallBtn";
+      revokeBtn.textContent = "Revoke Human";
+      revokeBtn.dataset.revokeHumanId = h.human_id || "";
+      revokeBtn.dataset.revokeHumanEmail = h.email || "";
+      card.appendChild(revokeBtn);
+    }
+
+    root.appendChild(card);
   }
-  root.appendChild(ul);
 }
 
 async function loadHumans() {
   const orgID = requireOrg("humansStatus", "Select an organization to load humans.");
-  if (!orgID) return;
+  if (!orgID) {
+    renderHumans([]);
+    return;
+  }
 
   setMuted("humansStatus", "Loading humans...");
   const res = await UI.req(`/v1/orgs/${orgID}/humans`);
@@ -174,6 +313,22 @@ async function loadHumans() {
   }
 
   renderHumans(res.data.humans || []);
+}
+
+async function revokeHuman(humanID, humanEmail) {
+  if (!humanID) return;
+  const orgID = requireOrg("humansStatus", "Select an organization first.");
+  if (!orgID) return;
+
+  setMuted("humansStatus", `Revoking ${humanEmail || humanID}...`);
+  const res = await UI.req(`/v1/orgs/${orgID}/humans/${encodeURIComponent(humanID)}`, "DELETE");
+  if (res.status !== 200) {
+    setStatus("humansStatus", "Could not revoke human.", true);
+    return;
+  }
+
+  setMuted("humansStatus", `Revoked ${humanEmail || humanID}.`);
+  await Promise.all([loadHumans(), listOrgs(true)]);
 }
 
 function selectedScopes() {
@@ -513,11 +668,12 @@ async function refreshMetrics() {
 }
 
 async function refreshOrgData() {
-  await Promise.all([loadHumans(), refreshMetrics(), loadAccessKeys()]);
+  await Promise.all([loadHumans(), loadOrgInvites(), refreshMetrics(), loadAccessKeys()]);
 }
 
 async function init() {
   UI.initTopNav();
+  await loadCurrentHuman();
 
   UI.$("btnCreateOrg").onclick = createOrg;
   UI.$("btnInvite").onclick = inviteHuman;
@@ -527,6 +683,7 @@ async function init() {
   UI.$("btnPartnerAgents").onclick = () => runPartnerQuery("agents");
   UI.$("orgSelect").onchange = async () => {
     UI.$("partnerOrgName").value = orgNameByID(selectedOrg());
+    setInviteCodeStatus("");
     await refreshOrgData();
   };
 
@@ -534,6 +691,18 @@ async function init() {
     const button = event.target.closest("button[data-revoke-key-id]");
     if (!button) return;
     await revokeAccessKey(button.dataset.revokeKeyId || "");
+  });
+
+  UI.$("orgInvitesList").addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-revoke-invite-id]");
+    if (!button) return;
+    await revokeInvite(button.dataset.revokeInviteId || "");
+  });
+
+  UI.$("humansList").addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-revoke-human-id]");
+    if (!button) return;
+    await revokeHuman(button.dataset.revokeHumanId || "", button.dataset.revokeHumanEmail || "");
   });
 
   await listOrgs(false);

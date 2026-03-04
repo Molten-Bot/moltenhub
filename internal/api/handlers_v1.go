@@ -17,8 +17,13 @@ type createOrgRequest struct {
 }
 
 type createInviteRequest struct {
-	Email string `json:"email"`
-	Role  string `json:"role"`
+	Email        string `json:"email"`
+	Role         string `json:"role"`
+	ExpiresInDays *int   `json:"expires_in_days,omitempty"`
+}
+
+type redeemInviteCodeRequest struct {
+	InviteCode string `json:"invite_code"`
 }
 
 type createBindTokenRequest struct {
@@ -57,6 +62,11 @@ type createOrgAccessKeyRequest struct {
 var (
 	errMissingOrgName      = errors.New("missing_org_name")
 	errMissingOrgAccessKey = errors.New("missing_org_access_key")
+)
+
+const (
+	defaultInviteExpiryDays = 7
+	maxInviteExpiryDays     = 365
 )
 
 func (h *Handler) handleUIConfig(w http.ResponseWriter, r *http.Request) {
@@ -190,40 +200,96 @@ func (h *Handler) handleOrgSubroutes(w http.ResponseWriter, r *http.Request) {
 
 	switch sub {
 	case "invites":
-		if r.Method != http.MethodPost {
+		if len(parts) != 4 {
+			writeError(w, http.StatusNotFound, "not_found", "route not found")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			invites, err := h.store.ListOrgInvites(orgID, actor.Human.HumanID, actor.IsSuperAdmin)
+			if err != nil {
+				switch {
+				case errors.Is(err, store.ErrOrgNotFound):
+					writeError(w, http.StatusNotFound, "unknown_org", "org_id is not registered")
+				case errors.Is(err, store.ErrUnauthorizedRole):
+					writeError(w, http.StatusForbidden, "forbidden", "role owner/admin required")
+				default:
+					writeError(w, http.StatusInternalServerError, "store_error", "failed to list invites")
+				}
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"invites": invites})
+			return
+		case http.MethodPost:
+			if h.denySuperAdminWrite(w, actor) {
+				return
+			}
+			var req createInviteRequest
+			if err := decodeJSON(r, &req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON request")
+				return
+			}
+			role := strings.ToLower(strings.TrimSpace(req.Role))
+			email := strings.ToLower(strings.TrimSpace(req.Email))
+			if email == "" {
+				writeError(w, http.StatusBadRequest, "invalid_email", "email is required")
+				return
+			}
+			expiryDays := defaultInviteExpiryDays
+			if req.ExpiresInDays != nil {
+				expiryDays = *req.ExpiresInDays
+			}
+			if expiryDays < 1 || expiryDays > maxInviteExpiryDays {
+				writeError(w, http.StatusBadRequest, "invalid_expires_in_days", "expires_in_days must be in range 1..365")
+				return
+			}
+
+			inviteCode, err := auth.GenerateToken()
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "token_generation_failed", "failed to generate invite code")
+				return
+			}
+			inviteID, err := h.idFactory()
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "id_generation_failed", "failed to generate invite_id")
+				return
+			}
+			now := h.now().UTC()
+			expiresAt := now.AddDate(0, 0, expiryDays)
+			invite, err := h.store.CreateInvite(
+				orgID,
+				email,
+				role,
+				actor.Human.HumanID,
+				inviteID,
+				auth.HashToken(inviteCode),
+				expiresAt,
+				now,
+			)
+			if err != nil {
+				switch {
+				case errors.Is(err, store.ErrOrgNotFound):
+					writeError(w, http.StatusNotFound, "unknown_org", "org_id is not registered")
+				case errors.Is(err, store.ErrUnauthorizedRole):
+					writeError(w, http.StatusForbidden, "forbidden", "role owner/admin required")
+				case errors.Is(err, store.ErrInvalidRole):
+					writeError(w, http.StatusBadRequest, "invalid_role", "role must be admin|member|viewer")
+				case errors.Is(err, store.ErrInviteInvalid):
+					writeError(w, http.StatusBadRequest, "invalid_invite", "invite payload is invalid")
+				default:
+					writeError(w, http.StatusInternalServerError, "store_error", "failed to create invite")
+				}
+				return
+			}
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"invite":      invite,
+				"invite_code": inviteCode,
+			})
+			return
+		default:
 			writeMethodNotAllowed(w)
 			return
 		}
-		if h.denySuperAdminWrite(w, actor) {
-			return
-		}
-		var req createInviteRequest
-		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON request")
-			return
-		}
-		role := strings.ToLower(strings.TrimSpace(req.Role))
-		email := strings.ToLower(strings.TrimSpace(req.Email))
-		inviteID, err := h.idFactory()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "id_generation_failed", "failed to generate invite_id")
-			return
-		}
-		invite, err := h.store.CreateInvite(orgID, email, role, actor.Human.HumanID, inviteID, h.now().UTC())
-		if err != nil {
-			switch {
-			case errors.Is(err, store.ErrOrgNotFound):
-				writeError(w, http.StatusNotFound, "unknown_org", "org_id is not registered")
-			case errors.Is(err, store.ErrUnauthorizedRole):
-				writeError(w, http.StatusForbidden, "forbidden", "role owner/admin required")
-			case errors.Is(err, store.ErrInvalidRole):
-				writeError(w, http.StatusBadRequest, "invalid_role", "role must be admin|member|viewer")
-			default:
-				writeError(w, http.StatusInternalServerError, "store_error", "failed to create invite")
-			}
-			return
-		}
-		writeJSON(w, http.StatusCreated, map[string]any{"invite": invite})
 		return
 	case "access-keys":
 		if len(parts) == 4 {
@@ -334,23 +400,60 @@ func (h *Handler) handleOrgSubroutes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "route not found")
 		return
 	case "humans":
-		if r.Method != http.MethodGet {
-			writeMethodNotAllowed(w)
-			return
-		}
-		humans, err := h.store.ListOrgHumans(orgID, actor.Human.HumanID, actor.IsSuperAdmin)
-		if err != nil {
-			switch {
-			case errors.Is(err, store.ErrOrgNotFound):
-				writeError(w, http.StatusNotFound, "unknown_org", "org_id is not registered")
-			case errors.Is(err, store.ErrUnauthorizedRole):
-				writeError(w, http.StatusForbidden, "forbidden", "org membership required")
-			default:
-				writeError(w, http.StatusInternalServerError, "store_error", "failed to list humans")
+		if len(parts) == 4 {
+			if r.Method != http.MethodGet {
+				writeMethodNotAllowed(w)
+				return
 			}
+			humans, err := h.store.ListOrgHumans(orgID, actor.Human.HumanID, actor.IsSuperAdmin)
+			if err != nil {
+				switch {
+				case errors.Is(err, store.ErrOrgNotFound):
+					writeError(w, http.StatusNotFound, "unknown_org", "org_id is not registered")
+				case errors.Is(err, store.ErrUnauthorizedRole):
+					writeError(w, http.StatusForbidden, "forbidden", "org membership required")
+				default:
+					writeError(w, http.StatusInternalServerError, "store_error", "failed to list humans")
+				}
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"humans": humans})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"humans": humans})
+
+		if len(parts) == 5 {
+			if r.Method != http.MethodDelete {
+				writeMethodNotAllowed(w)
+				return
+			}
+			if h.denySuperAdminWrite(w, actor) {
+				return
+			}
+			targetHumanID := strings.TrimSpace(parts[4])
+			if targetHumanID == "" {
+				writeError(w, http.StatusBadRequest, "invalid_human_id", "human_id is required")
+				return
+			}
+			membership, err := h.store.RevokeMembership(orgID, targetHumanID, actor.Human.HumanID, actor.IsSuperAdmin, h.now().UTC())
+			if err != nil {
+				switch {
+				case errors.Is(err, store.ErrOrgNotFound):
+					writeError(w, http.StatusNotFound, "unknown_org", "org_id is not registered")
+				case errors.Is(err, store.ErrMembershipNotFound):
+					writeError(w, http.StatusNotFound, "unknown_membership", "human is not an active member in this organization")
+				case errors.Is(err, store.ErrCannotRevokeOwner):
+					writeError(w, http.StatusBadRequest, "cannot_revoke_owner", "owner membership cannot be revoked")
+				case errors.Is(err, store.ErrUnauthorizedRole):
+					writeError(w, http.StatusForbidden, "forbidden", "owner/admin required")
+				default:
+					writeError(w, http.StatusInternalServerError, "store_error", "failed to revoke human membership")
+				}
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"membership": membership})
+			return
+		}
+		writeError(w, http.StatusNotFound, "not_found", "route not found")
 		return
 	case "agents":
 		if r.Method != http.MethodGet {
@@ -542,6 +645,40 @@ func (h *Handler) handleOrgInvites(w http.ResponseWriter, r *http.Request) {
 		}
 		invites := h.store.ListInvitesForHuman(actor.Human.HumanID, actor.Human.Email, actor.IsSuperAdmin)
 		writeJSON(w, http.StatusOK, map[string]any{"invites": invites})
+		return
+	}
+
+	if len(parts) == 3 && parts[2] == "redeem" {
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w)
+			return
+		}
+		if h.denySuperAdminWrite(w, actor) {
+			return
+		}
+		var req redeemInviteCodeRequest
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON request")
+			return
+		}
+		inviteCode := strings.TrimSpace(req.InviteCode)
+		if inviteCode == "" {
+			writeError(w, http.StatusBadRequest, "invalid_invite_code", "invite_code is required")
+			return
+		}
+		membership, err := h.store.AcceptInviteBySecretHash(auth.HashToken(inviteCode), actor.Human.HumanID, actor.Human.Email, h.now().UTC(), h.idFactory)
+		if err != nil {
+			switch {
+			case errors.Is(err, store.ErrInviteNotFound):
+				writeError(w, http.StatusNotFound, "unknown_invite_code", "invite_code is not registered")
+			case errors.Is(err, store.ErrInviteInvalid):
+				writeError(w, http.StatusBadRequest, "invalid_invite_code", "invite code cannot be redeemed by this user")
+			default:
+				writeError(w, http.StatusInternalServerError, "store_error", "failed to redeem invite code")
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"membership": membership})
 		return
 	}
 
