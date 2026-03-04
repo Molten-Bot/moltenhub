@@ -64,7 +64,7 @@ async function listOrgs() {
     for (const m of r.data.memberships) {
       const opt = document.createElement("option");
       opt.value = m.org.org_id;
-      opt.textContent = `${m.org.name} (${m.membership.role})`;
+      opt.textContent = `${m.org.display_name || m.org.handle} (${m.membership.role})`;
       select.appendChild(opt);
     }
   }

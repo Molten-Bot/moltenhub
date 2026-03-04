@@ -29,6 +29,7 @@ func main() {
 	humanAuth := auth.NewHumanAuthProviderFromEnv()
 	bindTTL := 15 * time.Minute
 	superAdminReviewMode := false
+	headlessMode := false
 	if raw := os.Getenv("BIND_TOKEN_TTL_MINUTES"); raw != "" {
 		if mins, err := strconv.Atoi(raw); err == nil && mins > 0 {
 			bindTTL = time.Duration(mins) * time.Minute
@@ -37,6 +38,11 @@ func main() {
 	if raw := strings.TrimSpace(os.Getenv("SUPER_ADMIN_REVIEW_MODE")); raw != "" {
 		if mode, err := strconv.ParseBool(raw); err == nil {
 			superAdminReviewMode = mode
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("STATOCYST_HEADLESS_MODE")); raw != "" {
+		if mode, err := strconv.ParseBool(raw); err == nil {
+			headlessMode = mode
 		}
 	}
 	handler := api.NewHandler(
@@ -49,6 +55,7 @@ func main() {
 		os.Getenv("SUPER_ADMIN_DOMAINS"),
 		superAdminReviewMode,
 		bindTTL,
+		headlessMode,
 	)
 	router := api.NewRouter(handler)
 

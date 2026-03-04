@@ -19,7 +19,7 @@ import (
 func newTestRouter() http.Handler {
 	st := store.NewMemoryStore()
 	waiters := longpoll.NewWaiters()
-	h := NewHandler(st, waiters, auth.NewDevHumanAuthProvider(), "", "", "", "molten.bot", true, 15*time.Minute)
+	h := NewHandler(st, waiters, auth.NewDevHumanAuthProvider(), "", "", "", "molten.bot", true, 15*time.Minute, false)
 	return NewRouter(h)
 }
 
@@ -53,9 +53,23 @@ func humanHeaders(humanID, email string) map[string]string {
 	}
 }
 
+func ensureHandleConfirmed(t *testing.T, router http.Handler, humanID, email string) {
+	t.Helper()
+	resp := doJSONRequest(t, router, http.MethodPatch, "/v1/me", map[string]any{
+		"handle": humanID,
+	}, humanHeaders(humanID, email))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("confirm handle failed: %d %s", resp.Code, resp.Body.String())
+	}
+}
+
 func createOrg(t *testing.T, router http.Handler, humanID, email, name string) string {
 	t.Helper()
-	resp := doJSONRequest(t, router, http.MethodPost, "/v1/orgs", map[string]string{"name": name}, humanHeaders(humanID, email))
+	ensureHandleConfirmed(t, router, humanID, email)
+	resp := doJSONRequest(t, router, http.MethodPost, "/v1/orgs", map[string]string{
+		"handle":       normalizeHandle(name),
+		"display_name": name,
+	}, humanHeaders(humanID, email))
 	if resp.Code != http.StatusCreated {
 		t.Fatalf("create org failed: %d %s", resp.Code, resp.Body.String())
 	}
@@ -90,12 +104,14 @@ func currentHumanID(t *testing.T, router http.Handler, humanID, email string) st
 
 func createInvite(t *testing.T, router http.Handler, humanID, email, orgID, inviteeEmail, role string) string {
 	t.Helper()
+	ensureHandleConfirmed(t, router, humanID, email)
 	inviteID, _ := createInviteWithCode(t, router, humanID, email, orgID, inviteeEmail, role)
 	return inviteID
 }
 
 func createInviteWithCode(t *testing.T, router http.Handler, humanID, email, orgID, inviteeEmail, role string) (string, string) {
 	t.Helper()
+	ensureHandleConfirmed(t, router, humanID, email)
 	resp := doJSONRequest(t, router, http.MethodPost, "/v1/orgs/"+orgID+"/invites", map[string]string{
 		"email": inviteeEmail,
 		"role":  role,
@@ -121,6 +137,7 @@ func createInviteWithCode(t *testing.T, router http.Handler, humanID, email, org
 
 func acceptInvite(t *testing.T, router http.Handler, humanID, email, inviteID string) {
 	t.Helper()
+	ensureHandleConfirmed(t, router, humanID, email)
 	resp := doJSONRequest(t, router, http.MethodPost, "/v1/org-invites/"+inviteID+"/accept", nil, humanHeaders(humanID, email))
 	if resp.Code != http.StatusOK {
 		t.Fatalf("accept invite failed: %d %s", resp.Code, resp.Body.String())
@@ -129,6 +146,7 @@ func acceptInvite(t *testing.T, router http.Handler, humanID, email, inviteID st
 
 func registerAgent(t *testing.T, router http.Handler, humanID, email, orgID, agentID, ownerHumanID string) string {
 	t.Helper()
+	ensureHandleConfirmed(t, router, humanID, email)
 	body := map[string]any{
 		"org_id":   orgID,
 		"agent_id": agentID,
@@ -153,6 +171,7 @@ func registerAgent(t *testing.T, router http.Handler, humanID, email, orgID, age
 
 func registerMyAgent(t *testing.T, router http.Handler, humanID, email, agentID string) (string, string) {
 	t.Helper()
+	ensureHandleConfirmed(t, router, humanID, email)
 	resp := doJSONRequest(t, router, http.MethodPost, "/v1/me/agents", map[string]any{
 		"agent_id": agentID,
 	}, humanHeaders(humanID, email))
@@ -173,6 +192,7 @@ func registerMyAgent(t *testing.T, router http.Handler, humanID, email, agentID 
 
 func createOrgAccessKey(t *testing.T, router http.Handler, humanID, email, orgID, label string, scopes []string) (string, string) {
 	t.Helper()
+	ensureHandleConfirmed(t, router, humanID, email)
 	body := map[string]any{
 		"label":  label,
 		"scopes": scopes,
@@ -286,6 +306,7 @@ func TestInviteCodeRedeemFlow(t *testing.T) {
 	router := newTestRouter()
 	orgID := createOrg(t, router, "alice", "alice@a.test", "Org Invite Codes")
 	_, inviteCode := createInviteWithCode(t, router, "alice", "alice@a.test", orgID, "bob@b.test", "member")
+	ensureHandleConfirmed(t, router, "bob", "bob@b.test")
 
 	listInvites := doJSONRequest(t, router, http.MethodGet, "/v1/orgs/"+orgID+"/invites", nil, humanHeaders("alice", "alice@a.test"))
 	if listInvites.Code != http.StatusOK {
@@ -319,6 +340,7 @@ func TestInviteCodeRedeemRejectsWrongEmail(t *testing.T) {
 	router := newTestRouter()
 	orgID := createOrg(t, router, "alice", "alice@a.test", "Org Invite Security")
 	_, inviteCode := createInviteWithCode(t, router, "alice", "alice@a.test", orgID, "bob@b.test", "member")
+	ensureHandleConfirmed(t, router, "charlie", "charlie@c.test")
 
 	redeem := doJSONRequest(t, router, http.MethodPost, "/v1/org-invites/redeem", map[string]string{
 		"invite_code": inviteCode,
@@ -505,6 +527,7 @@ func TestMyAgentsAndImmediateSelfBond(t *testing.T) {
 
 func TestMyAgentBindTokenRedeemWithAgentChosenName(t *testing.T) {
 	router := newTestRouter()
+	ensureHandleConfirmed(t, router, "alice", "alice@a.test")
 
 	createResp := doJSONRequest(t, router, http.MethodPost, "/v1/me/agents/bind-tokens", map[string]any{}, humanHeaders("alice", "alice@a.test"))
 	if createResp.Code != http.StatusCreated {
@@ -731,10 +754,14 @@ func TestBindTokenRedeemSingleUse(t *testing.T) {
 func TestSuperAdminReadOnly(t *testing.T) {
 	router := newTestRouter()
 	_ = createOrg(t, router, "alice", "alice@a.test", "Org A")
+	ensureHandleConfirmed(t, router, "root", "root@molten.bot")
 
-	readonlyCreate := doJSONRequest(t, router, http.MethodPost, "/v1/orgs", map[string]string{"name": "ShouldFail"}, humanHeaders("root", "root@molten.bot"))
-	if readonlyCreate.Code != http.StatusForbidden {
-		t.Fatalf("expected super admin write deny 403, got %d %s", readonlyCreate.Code, readonlyCreate.Body.String())
+	readonlyCreate := doJSONRequest(t, router, http.MethodPost, "/v1/orgs", map[string]string{
+		"handle":       "root-org",
+		"display_name": "Root Org",
+	}, humanHeaders("root", "root@molten.bot"))
+	if readonlyCreate.Code != http.StatusCreated {
+		t.Fatalf("expected super admin write allow 201, got %d %s", readonlyCreate.Code, readonlyCreate.Body.String())
 	}
 
 	snap := doJSONRequest(t, router, http.MethodGet, "/v1/admin/snapshot", nil, humanHeaders("root", "root@molten.bot"))
@@ -746,31 +773,37 @@ func TestSuperAdminReadOnly(t *testing.T) {
 func TestOrganizationNameUniqueCaseInsensitive(t *testing.T) {
 	router := newTestRouter()
 	_ = createOrg(t, router, "alice", "alice@a.test", "Acme")
+	ensureHandleConfirmed(t, router, "bob", "bob@b.test")
 
 	dup := doJSONRequest(t, router, http.MethodPost, "/v1/orgs", map[string]string{
-		"name": "  acME  ",
+		"handle":       "  acME  ",
+		"display_name": "ACME Duplicate",
 	}, humanHeaders("bob", "bob@b.test"))
 	if dup.Code != http.StatusConflict {
-		t.Fatalf("expected 409 for duplicate org name, got %d %s", dup.Code, dup.Body.String())
+		t.Fatalf("expected 409 for duplicate org handle, got %d %s", dup.Code, dup.Body.String())
 	}
 	body := decodeJSONMap(t, dup.Body.Bytes())
-	if body["error"] != "org_name_exists" {
-		t.Fatalf("expected org_name_exists error, got %v", body["error"])
+	if body["error"] != "org_handle_exists" {
+		t.Fatalf("expected org_handle_exists error, got %v", body["error"])
 	}
+	ensureHandleConfirmed(t, router, "carol", "carol@c.test")
 
 	dupSpacing := doJSONRequest(t, router, http.MethodPost, "/v1/orgs", map[string]string{
-		"name": "acme   ",
+		"handle":       "acme   ",
+		"display_name": "Acme Duplicate 2",
 	}, humanHeaders("carol", "carol@c.test"))
 	if dupSpacing.Code != http.StatusConflict {
-		t.Fatalf("expected 409 for duplicate org name with spacing variance, got %d %s", dupSpacing.Code, dupSpacing.Body.String())
+		t.Fatalf("expected 409 for duplicate org handle with spacing variance, got %d %s", dupSpacing.Code, dupSpacing.Body.String())
 	}
 
 	_ = createOrg(t, router, "dan", "dan@d.test", "Acme Labs")
+	ensureHandleConfirmed(t, router, "erin", "erin@e.test")
 	dupInternalSpacing := doJSONRequest(t, router, http.MethodPost, "/v1/orgs", map[string]string{
-		"name": "  acme    labs  ",
+		"handle":       "  acme    labs  ",
+		"display_name": "Acme Labs Duplicate",
 	}, humanHeaders("erin", "erin@e.test"))
 	if dupInternalSpacing.Code != http.StatusConflict {
-		t.Fatalf("expected 409 for duplicate org name with internal spacing variance, got %d %s", dupInternalSpacing.Code, dupInternalSpacing.Body.String())
+		t.Fatalf("expected 409 for duplicate org handle with internal spacing variance, got %d %s", dupInternalSpacing.Code, dupInternalSpacing.Body.String())
 	}
 }
 
@@ -921,7 +954,7 @@ func TestLiveShowsOnlyPublicEntities(t *testing.T) {
 func TestBindTokenExpires(t *testing.T) {
 	st := store.NewMemoryStore()
 	waiters := longpoll.NewWaiters()
-	h := NewHandler(st, waiters, auth.NewDevHumanAuthProvider(), "", "", "", "molten.bot", true, 15*time.Minute)
+	h := NewHandler(st, waiters, auth.NewDevHumanAuthProvider(), "", "", "", "molten.bot", true, 15*time.Minute, false)
 	now := time.Date(2026, 3, 3, 10, 0, 0, 0, time.UTC)
 	h.now = func() time.Time { return now }
 	router := NewRouter(h)
@@ -1097,5 +1130,120 @@ func TestUIRoutes_JavascriptAssets(t *testing.T) {
 		if !strings.Contains(contentType, "application/javascript") {
 			t.Fatalf("%s expected javascript content type, got %q", path, contentType)
 		}
+	}
+}
+
+func TestHeadlessModeDisablesUIRoutes(t *testing.T) {
+	st := store.NewMemoryStore()
+	waiters := longpoll.NewWaiters()
+	h := NewHandler(st, waiters, auth.NewDevHumanAuthProvider(), "", "", "", "molten.bot", true, 15*time.Minute, true)
+	router := NewRouter(h)
+
+	me := doJSONRequest(t, router, http.MethodGet, "/v1/me", nil, humanHeaders("alice", "alice@a.test"))
+	if me.Code != http.StatusOK {
+		t.Fatalf("expected /v1/me to work in headless mode, got %d %s", me.Code, me.Body.String())
+	}
+
+	profile := doJSONRequest(t, router, http.MethodGet, "/profile", nil, nil)
+	if profile.Code != http.StatusNotFound {
+		t.Fatalf("expected /profile to be 404 in headless mode, got %d %s", profile.Code, profile.Body.String())
+	}
+
+	live := doJSONRequest(t, router, http.MethodGet, "/live", nil, nil)
+	if live.Code != http.StatusNotFound {
+		t.Fatalf("expected /live to be 404 in headless mode, got %d %s", live.Code, live.Body.String())
+	}
+}
+
+func TestOnboardingBlocksWritesUntilHandleConfirmed(t *testing.T) {
+	router := newTestRouter()
+
+	createBefore := doJSONRequest(t, router, http.MethodPost, "/v1/orgs", map[string]string{
+		"handle":       "alpha",
+		"display_name": "Alpha",
+	}, humanHeaders("alice", "alice@a.test"))
+	if createBefore.Code != http.StatusConflict {
+		t.Fatalf("expected onboarding block 409 before handle confirmation, got %d %s", createBefore.Code, createBefore.Body.String())
+	}
+	beforePayload := decodeJSONMap(t, createBefore.Body.Bytes())
+	if beforePayload["error"] != "onboarding_required" {
+		t.Fatalf("expected onboarding_required error, got %v", beforePayload["error"])
+	}
+
+	ensureHandleConfirmed(t, router, "alice", "alice@a.test")
+
+	createAfter := doJSONRequest(t, router, http.MethodPost, "/v1/orgs", map[string]string{
+		"handle":       "alpha",
+		"display_name": "Alpha",
+	}, humanHeaders("alice", "alice@a.test"))
+	if createAfter.Code != http.StatusCreated {
+		t.Fatalf("expected org create success after handle confirmation, got %d %s", createAfter.Code, createAfter.Body.String())
+	}
+}
+
+func TestAgentLimitAndSuperAdminBypass(t *testing.T) {
+	router := newTestRouter()
+	ensureHandleConfirmed(t, router, "alice", "alice@a.test")
+	ensureHandleConfirmed(t, router, "root", "root@molten.bot")
+
+	_, _ = registerMyAgent(t, router, "alice", "alice@a.test", "alice-agent-1")
+	_, _ = registerMyAgent(t, router, "alice", "alice@a.test", "alice-agent-2")
+	third := doJSONRequest(t, router, http.MethodPost, "/v1/me/agents", map[string]any{
+		"agent_id": "alice-agent-3",
+	}, humanHeaders("alice", "alice@a.test"))
+	if third.Code != http.StatusConflict {
+		t.Fatalf("expected non-super-admin third agent to fail with 409, got %d %s", third.Code, third.Body.String())
+	}
+	thirdPayload := decodeJSONMap(t, third.Body.Bytes())
+	if thirdPayload["error"] != "agent_limit_reached" {
+		t.Fatalf("expected agent_limit_reached error, got %v", thirdPayload["error"])
+	}
+
+	rootOrg := createOrg(t, router, "root", "root@molten.bot", "Root Ops")
+	rootID := currentHumanID(t, router, "root", "root@molten.bot")
+	createOne := doJSONRequest(t, router, http.MethodPost, "/v1/agents/register", map[string]any{
+		"org_id":         rootOrg,
+		"agent_id":       "root-agent-1",
+		"owner_human_id": rootID,
+	}, humanHeaders("root", "root@molten.bot"))
+	if createOne.Code != http.StatusCreated {
+		t.Fatalf("expected root first agent to be created, got %d %s", createOne.Code, createOne.Body.String())
+	}
+	createTwo := doJSONRequest(t, router, http.MethodPost, "/v1/agents/register", map[string]any{
+		"org_id":         rootOrg,
+		"agent_id":       "root-agent-2",
+		"owner_human_id": rootID,
+	}, humanHeaders("root", "root@molten.bot"))
+	if createTwo.Code != http.StatusCreated {
+		t.Fatalf("expected root second agent to be created, got %d %s", createTwo.Code, createTwo.Body.String())
+	}
+	createThree := doJSONRequest(t, router, http.MethodPost, "/v1/agents/register", map[string]any{
+		"org_id":         rootOrg,
+		"agent_id":       "root-agent-3",
+		"owner_human_id": rootID,
+	}, humanHeaders("root", "root@molten.bot"))
+	if createThree.Code != http.StatusCreated {
+		t.Fatalf("expected root third agent to bypass limit, got %d %s", createThree.Code, createThree.Body.String())
+	}
+}
+
+func TestLiveSnapshotEndpoint(t *testing.T) {
+	router := newTestRouter()
+	orgID := createOrg(t, router, "alice", "alice@a.test", "Snapshot Org")
+	aliceID := currentHumanID(t, router, "alice", "alice@a.test")
+	_ = registerAgent(t, router, "alice", "alice@a.test", orgID, "snapshot-agent", aliceID)
+
+	resp := doJSONRequest(t, router, http.MethodGet, "/v1/live/snapshot", nil, nil)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected /v1/live/snapshot 200, got %d %s", resp.Code, resp.Body.String())
+	}
+	payload := decodeJSONMap(t, resp.Body.Bytes())
+	orgs, ok := payload["organizations"].([]any)
+	if !ok || len(orgs) == 0 {
+		t.Fatalf("expected non-empty organizations in snapshot, got %v", payload["organizations"])
+	}
+	first, _ := orgs[0].(map[string]any)
+	if first["handle"] == "" {
+		t.Fatalf("expected organization handle in snapshot row: %v", first)
 	}
 }

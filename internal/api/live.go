@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"statocyst/internal/model"
@@ -22,9 +23,10 @@ type livePageData struct {
 }
 
 type liveOrgView struct {
-	Handle string
-	Humans []liveHumanView
-	Agents []liveAgentView
+	Handle      string
+	DisplayName string
+	Humans      []liveHumanView
+	Agents      []liveAgentView
 }
 
 type liveHumanView struct {
@@ -34,6 +36,29 @@ type liveHumanView struct {
 
 type liveAgentView struct {
 	Handle string
+}
+
+type liveSnapshotResponse struct {
+	GeneratedAt   string            `json:"generated_at"`
+	Organizations []liveSnapshotOrg `json:"organizations"`
+}
+
+type liveSnapshotOrg struct {
+	OrgID       string              `json:"org_id"`
+	Handle      string              `json:"handle"`
+	DisplayName string              `json:"display_name"`
+	Humans      []liveSnapshotHuman `json:"humans"`
+	Agents      []liveSnapshotAgent `json:"agents"`
+}
+
+type liveSnapshotHuman struct {
+	HumanID string              `json:"human_id"`
+	Handle  string              `json:"handle"`
+	Agents  []liveSnapshotAgent `json:"agents"`
+}
+
+type liveSnapshotAgent struct {
+	AgentID string `json:"agent_id"`
 }
 
 func (h *Handler) handleLive(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +85,15 @@ func (h *Handler) handleLive(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_ = tpl.Execute(w, data)
+}
+
+func (h *Handler) handleLiveSnapshot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+	now := h.now().UTC()
+	writeJSON(w, http.StatusOK, h.buildLiveSnapshot(now))
 }
 
 func (h *Handler) buildLivePageData(now time.Time) livePageData {
@@ -118,7 +152,18 @@ func (h *Handler) buildLivePageData(now time.Time) livePageData {
 		orgIDs = append(orgIDs, orgID)
 	}
 	sort.Slice(orgIDs, func(i, j int) bool {
-		return publicOrgs[orgIDs[i]].Name < publicOrgs[orgIDs[j]].Name
+		left := strings.TrimSpace(publicOrgs[orgIDs[i]].DisplayName)
+		if left == "" {
+			left = publicOrgs[orgIDs[i]].Handle
+		}
+		right := strings.TrimSpace(publicOrgs[orgIDs[j]].DisplayName)
+		if right == "" {
+			right = publicOrgs[orgIDs[j]].Handle
+		}
+		if left == right {
+			return publicOrgs[orgIDs[i]].Handle < publicOrgs[orgIDs[j]].Handle
+		}
+		return left < right
 	})
 
 	orgViews := make([]liveOrgView, 0, len(orgIDs))
@@ -155,9 +200,10 @@ func (h *Handler) buildLivePageData(now time.Time) livePageData {
 		}
 
 		orgViews = append(orgViews, liveOrgView{
-			Handle: publicOrgs[orgID].Name,
-			Humans: humanViews,
-			Agents: orgAgentViews,
+			Handle:      publicOrgs[orgID].Handle,
+			DisplayName: publicOrgs[orgID].DisplayName,
+			Humans:      humanViews,
+			Agents:      orgAgentViews,
 		})
 	}
 
@@ -166,6 +212,39 @@ func (h *Handler) buildLivePageData(now time.Time) livePageData {
 		GeneratedAt:   now.Format(time.RFC3339),
 		Organizations: orgViews,
 	}
+}
+
+func (h *Handler) buildLiveSnapshot(now time.Time) liveSnapshotResponse {
+	page := h.buildLivePageData(now)
+	out := liveSnapshotResponse{
+		GeneratedAt:   page.GeneratedAt,
+		Organizations: make([]liveSnapshotOrg, 0, len(page.Organizations)),
+	}
+	for _, org := range page.Organizations {
+		orgOut := liveSnapshotOrg{
+			OrgID:       "", // intentionally omitted in public snapshot
+			Handle:      org.Handle,
+			DisplayName: org.DisplayName,
+			Humans:      make([]liveSnapshotHuman, 0, len(org.Humans)),
+			Agents:      make([]liveSnapshotAgent, 0, len(org.Agents)),
+		}
+		for _, agent := range org.Agents {
+			orgOut.Agents = append(orgOut.Agents, liveSnapshotAgent{AgentID: agent.Handle})
+		}
+		for _, human := range org.Humans {
+			humanOut := liveSnapshotHuman{
+				HumanID: "",
+				Handle:  human.Handle,
+				Agents:  make([]liveSnapshotAgent, 0, len(human.Agents)),
+			}
+			for _, agent := range human.Agents {
+				humanOut.Agents = append(humanOut.Agents, liveSnapshotAgent{AgentID: agent.Handle})
+			}
+			orgOut.Humans = append(orgOut.Humans, humanOut)
+		}
+		out.Organizations = append(out.Organizations, orgOut)
+	}
+	return out
 }
 
 func dedupeHumansByID(items []model.Human) []model.Human {

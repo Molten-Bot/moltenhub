@@ -40,6 +40,24 @@ paths:
           description: Human
         '401':
           description: Unauthorized
+    patch:
+      summary: Update current human profile (confirms handle onboarding)
+      security:
+        - humanAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                handle:
+                  type: string
+                is_public:
+                  type: boolean
+      responses:
+        '200':
+          description: Human updated
   /v1/admin/snapshot:
     get:
       summary: Super-admin read-only global snapshot
@@ -144,13 +162,17 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name]
+              required: [handle]
               properties:
-                name:
+                handle:
+                  type: string
+                display_name:
                   type: string
       responses:
         '201':
           description: Organization created
+        '409':
+          description: Duplicate handle
   /v1/orgs/{org_id}/invites:
     get:
       summary: List invites for an organization
@@ -719,6 +741,12 @@ paths:
           description: Message
         '204':
           description: No content
+  /v1/live/snapshot:
+    get:
+      summary: Public live snapshot for static site generation
+      responses:
+        '200':
+          description: Public organizations/humans/agents snapshot
 components:
   securitySchemes:
     humanAuth:

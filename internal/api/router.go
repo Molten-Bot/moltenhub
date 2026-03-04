@@ -36,6 +36,7 @@ type Handler struct {
 	superAdminDomains map[string]struct{}
 	superAdminReview  bool
 	bindTokenTTL      time.Duration
+	headlessMode      bool
 }
 
 type humanActor struct {
@@ -53,6 +54,7 @@ func NewHandler(
 	superAdminDomainsCSV string,
 	superAdminReview bool,
 	bindTokenTTL time.Duration,
+	headlessMode bool,
 ) *Handler {
 	if bindTokenTTL <= 0 {
 		bindTokenTTL = 15 * time.Minute
@@ -69,6 +71,7 @@ func NewHandler(
 		superAdminDomains: parseDomains(superAdminDomainsCSV),
 		superAdminReview:  superAdminReview,
 		bindTokenTTL:      bindTokenTTL,
+		headlessMode:      headlessMode,
 	}
 }
 
@@ -102,6 +105,7 @@ func NewRouter(handler *Handler) http.Handler {
 	mux.HandleFunc("/v1/agent-trusts/", handler.handleAgentTrustByID)
 	mux.HandleFunc("/v1/messages/publish", handler.handlePublish)
 	mux.HandleFunc("/v1/messages/pull", handler.handlePull)
+	mux.HandleFunc("/v1/live/snapshot", handler.handleLiveSnapshot)
 	mux.HandleFunc("/", handler.handleUI)
 	return mux
 }
@@ -265,9 +269,6 @@ func setToSortedSlice(set map[string]struct{}) []string {
 }
 
 func (h *Handler) isSuperAdmin(identity auth.HumanIdentity) bool {
-	if !h.superAdminReview {
-		return false
-	}
 	if !identity.EmailVerified {
 		return false
 	}
@@ -287,10 +288,21 @@ func (h *Handler) isSuperAdmin(identity auth.HumanIdentity) bool {
 	return ok
 }
 
-func (h *Handler) denySuperAdminWrite(w http.ResponseWriter, actor humanActor) bool {
-	if actor.IsSuperAdmin {
-		writeError(w, http.StatusForbidden, "super_admin_read_only", "super admin is read-only")
-		return true
+func (h *Handler) requireHandleConfirmedForWrite(w http.ResponseWriter, actor humanActor) bool {
+	if actor.Human.HandleConfirmedAt != nil {
+		return false
 	}
-	return false
+	writeError(w, http.StatusConflict, "onboarding_required", "handle setup required before performing this action")
+	return true
+}
+
+func (h *Handler) isSuperAdminHumanID(humanID string) bool {
+	human, err := h.store.GetHuman(humanID)
+	if err != nil {
+		return false
+	}
+	return h.isSuperAdmin(auth.HumanIdentity{
+		Email:         human.Email,
+		EmailVerified: human.EmailVerified,
+	})
 }
