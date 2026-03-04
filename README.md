@@ -60,14 +60,17 @@ curl -sS http://localhost:8080/openapi.yaml
 Open:
 
 ```text
-http://localhost:8080/         # login page (human login via Supabase when enabled)
-http://localhost:8080/domains  # existing admin/domains operations UI
+http://localhost:8080/              # login page (human login via Supabase when enabled)
+http://localhost:8080/profile       # user profile + memberships + invite acceptance
+http://localhost:8080/organization  # org admin area (create org, invite humans, org metrics)
+http://localhost:8080/agents        # agent lifecycle + pending agent trust approvals
+http://localhost:8080/domains       # legacy all-in-one page (kept for review)
 ```
 
 Notes:
 - `HUMAN_AUTH_PROVIDER=supabase`: `/` login button uses Supabase Google OAuth (via Supabase JS + `/v1/ui/config`).
-- `HUMAN_AUTH_PROVIDER=dev`: `/` login button skips directly to `/domains` for local development.
-- Domains UI banner still states in-memory and single-instance limitations.
+- `HUMAN_AUTH_PROVIDER=dev`: `/` login button skips directly to `/profile` for local development.
+- Role checks are enforced by API; non-admin users may see org/agent pages but write actions can return `403`.
 
 ## Quick API Flow (Dev Auth)
 

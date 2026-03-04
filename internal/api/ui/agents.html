@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Statocyst Agents</title>
+    <style>
+      :root {
+        --bg: #f6f7f9;
+        --ink: #1f2933;
+        --muted: #52606d;
+        --panel: #ffffff;
+        --line: #d9e2ec;
+        --accent: #0b7285;
+      }
+      body {
+        margin: 0;
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background: linear-gradient(180deg, #f8fafc, #eef2f7);
+      }
+      header {
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--line);
+        background: #fff;
+      }
+      nav a {
+        margin-right: 12px;
+        color: var(--accent);
+        text-decoration: none;
+        font-weight: 600;
+      }
+      main {
+        max-width: 1200px;
+        margin: 16px auto;
+        padding: 0 12px 24px;
+      }
+      .banner {
+        border: 1px solid var(--line);
+        background: #fff;
+        border-radius: 8px;
+        padding: 10px;
+        margin-bottom: 12px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+        gap: 12px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 12px;
+      }
+      h2 {
+        margin: 4px 0 10px;
+        font-size: 1rem;
+      }
+      input,
+      button,
+      select {
+        width: 100%;
+        box-sizing: border-box;
+        margin: 5px 0;
+        padding: 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #fff;
+      }
+      button {
+        background: var(--accent);
+        color: #fff;
+        border-color: var(--accent);
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: #fff;
+        color: var(--ink);
+      }
+      pre {
+        background: #0f172a;
+        color: #cbd5e1;
+        border-radius: 6px;
+        padding: 8px;
+        overflow: auto;
+        max-height: 220px;
+      }
+      .status {
+        margin-top: 6px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 8px;
+      }
+      .status.warn {
+        background: #fef9c3;
+        border-color: #facc15;
+        color: #713f12;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+      }
+      th,
+      td {
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        padding: 6px;
+        vertical-align: top;
+      }
+      .row-actions {
+        display: grid;
+        gap: 6px;
+      }
+      .row-actions button {
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>Statocyst</strong>
+      <nav style="margin-top: 6px">
+        <a href="/profile">Profile</a>
+        <a href="/organization">Organization</a>
+        <a href="/agents">Agents</a>
+        <a href="/domains">Domains (Legacy)</a>
+      </nav>
+    </header>
+
+    <main>
+      <div class="banner">
+        <strong>/agents</strong> focuses on agent lifecycle (list/register/rotate/revoke) and pending agent-trust
+        approvals (approve/block/revoke). Org trust actions are intentionally omitted from this page for now.
+      </div>
+
+      <div class="grid">
+        <section class="panel">
+          <h2>Session</h2>
+          <div id="configSummary" class="muted">Loading auth config...</div>
+          <input id="authToken" placeholder="Bearer token (auto-saved from login)" />
+          <input id="humanId" placeholder="Dev header: X-Human-Id" />
+          <input id="humanEmail" placeholder="Dev header: X-Human-Email" />
+          <button id="btnSaveSession">Save Session</button>
+          <button id="btnClearSession" class="secondary">Clear Session</button>
+          <button id="btnGoLogin" class="secondary">Go to Login</button>
+          <div id="sessionStatus" class="status"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Organization Scope</h2>
+          <p class="muted">Pick organization before listing agents or trust queue.</p>
+          <button id="btnLoadOrgs">Load My Organizations</button>
+          <select id="orgSelect"></select>
+          <pre id="orgOut"></pre>
+        </section>
+
+        <section class="panel">
+          <h2>Agents</h2>
+          <button id="btnListAgents">List Agents</button>
+          <input id="agentId" placeholder="agent_id" />
+          <input id="ownerHumanId" placeholder="owner_human_id (optional for register)" />
+          <button id="btnRegisterAgent">Register Agent</button>
+          <button id="btnRotateAgent">Rotate Token</button>
+          <button id="btnRevokeAgent">Revoke Agent</button>
+          <pre id="agentOut"></pre>
+          <pre id="agentsOut"></pre>
+        </section>
+
+        <section class="panel" style="grid-column: span 2">
+          <h2>Pending Agent Trust Approvals</h2>
+          <p class="muted">
+            Shows pending agent-to-agent trust edges for selected org (via trust graph). Use actions to
+            approve, block, or revoke.
+          </p>
+          <button id="btnRefreshPending">Refresh Pending Requests</button>
+          <div id="pendingList"></div>
+          <pre id="pendingOut"></pre>
+        </section>
+      </div>
+    </main>
+
+    <script src="/common.js"></script>
+    <script src="/agents.js"></script>
+  </body>
+</html>
