@@ -170,6 +170,29 @@
         width: auto;
         margin: 0;
       }
+      .rowList {
+        display: grid;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .rowItem {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px;
+      }
+      .rowTitle {
+        font-weight: 600;
+      }
+      .rowMeta {
+        color: var(--muted);
+        font-size: 0.9rem;
+        margin-top: 2px;
+      }
+      .smallBtn {
+        width: auto;
+        margin-top: 8px;
+        padding: 6px 10px;
+      }
     </style>
   </head>
   <body>
@@ -212,10 +235,15 @@
           </select>
           <button id="btnInvite">Create Invite</button>
           <div id="inviteStatus" class="status">No invite action yet.</div>
+          <div id="inviteCodeStatus" class="status" style="display: none"></div>
+
+          <h3>Invite Codes</h3>
+          <div id="orgInvitesStatus" class="muted">Select an organization to load invites.</div>
+          <div id="orgInvitesList" class="rowList"></div>
 
           <h3>Organization Humans</h3>
           <div id="humansStatus" class="muted">Select an organization to load humans.</div>
-          <div id="humansList"></div>
+          <div id="humansList" class="rowList"></div>
         </section>
 
         <section class="panel">

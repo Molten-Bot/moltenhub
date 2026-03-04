@@ -191,7 +191,7 @@ func (s *MemoryStore) ListMyMemberships(humanID string) []model.MembershipWithOr
 	return out
 }
 
-func (s *MemoryStore) CreateInvite(orgID, email, role, actorHumanID, inviteID string, now time.Time) (model.Invite, error) {
+func (s *MemoryStore) CreateInvite(orgID, email, role, actorHumanID, inviteID, inviteSecretHash string, expiresAt, now time.Time) (model.Invite, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -204,20 +204,33 @@ func (s *MemoryStore) CreateInvite(orgID, email, role, actorHumanID, inviteID st
 	if !isValidRole(role) || role == model.RoleOwner {
 		return model.Invite{}, ErrInvalidRole
 	}
+	if inviteSecretHash == "" {
+		return model.Invite{}, ErrInviteInvalid
+	}
+	if _, exists := s.inviteBySecretHash[inviteSecretHash]; exists {
+		return model.Invite{}, ErrInviteInvalid
+	}
+	if !expiresAt.After(now) {
+		return model.Invite{}, ErrInviteInvalid
+	}
 
 	invite := model.Invite{
-		InviteID:  inviteID,
-		OrgID:     orgID,
-		Email:     strings.ToLower(strings.TrimSpace(email)),
-		Role:      role,
-		Status:    model.StatusPending,
-		CreatedBy: actorHumanID,
-		CreatedAt: now,
+		InviteID:     inviteID,
+		OrgID:        orgID,
+		Email:        strings.ToLower(strings.TrimSpace(email)),
+		Role:         role,
+		Status:       model.StatusPending,
+		CreatedBy:    actorHumanID,
+		CreatedAt:    now,
+		ExpiresAt:    expiresAt,
+		InviteSecret: inviteSecretHash,
 	}
 	s.invites[invite.InviteID] = invite
+	s.inviteBySecretHash[inviteSecretHash] = invite.InviteID
 	s.appendAuditLocked(orgID, actorHumanID, "invite", "create", invite.InviteID, map[string]any{
-		"email": invite.Email,
-		"role":  invite.Role,
+		"email":      invite.Email,
+		"role":       invite.Role,
+		"expires_at": invite.ExpiresAt,
 	}, now)
 	return invite, nil
 }
@@ -226,9 +239,32 @@ func (s *MemoryStore) AcceptInvite(inviteID, humanID, humanEmail string, now tim
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.acceptInviteLocked(inviteID, humanID, humanEmail, now, idFactory)
+}
+
+func (s *MemoryStore) AcceptInviteBySecretHash(inviteSecretHash, humanID, humanEmail string, now time.Time, idFactory func() (string, error)) (model.Membership, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	inviteID, ok := s.inviteBySecretHash[inviteSecretHash]
+	if !ok || inviteID == "" {
+		return model.Membership{}, ErrInviteNotFound
+	}
+	return s.acceptInviteLocked(inviteID, humanID, humanEmail, now, idFactory)
+}
+
+func (s *MemoryStore) acceptInviteLocked(inviteID, humanID, humanEmail string, now time.Time, idFactory func() (string, error)) (model.Membership, error) {
 	invite, ok := s.invites[inviteID]
 	if !ok {
 		return model.Membership{}, ErrInviteNotFound
+	}
+	if invite.Status == model.StatusPending && now.After(invite.ExpiresAt) {
+		invite.Status = model.StatusExpired
+		expiredAt := now
+		invite.RevokedAt = &expiredAt
+		s.invites[inviteID] = invite
+		delete(s.inviteBySecretHash, invite.InviteSecret)
+		return model.Membership{}, ErrInviteInvalid
 	}
 	if invite.Status != model.StatusPending {
 		return model.Membership{}, ErrInviteInvalid
@@ -247,6 +283,7 @@ func (s *MemoryStore) AcceptInvite(inviteID, humanID, humanEmail string, now tim
 			invite.Status = model.StatusActive
 			invite.AcceptedAt = &accepted
 			s.invites[inviteID] = invite
+			delete(s.inviteBySecretHash, invite.InviteSecret)
 			return m, nil
 		}
 	}
@@ -270,6 +307,7 @@ func (s *MemoryStore) AcceptInvite(inviteID, humanID, humanEmail string, now tim
 	invite.Status = model.StatusActive
 	invite.AcceptedAt = &accepted
 	s.invites[inviteID] = invite
+	delete(s.inviteBySecretHash, invite.InviteSecret)
 	s.appendAuditLocked(invite.OrgID, humanID, "invite", "accept", inviteID, nil, now)
 	return mem, nil
 }
@@ -280,6 +318,7 @@ func (s *MemoryStore) ListInvitesForHuman(humanID, humanEmail string, isSuperAdm
 
 	email := strings.ToLower(strings.TrimSpace(humanEmail))
 	out := make([]model.InviteWithOrg, 0)
+	now := time.Now().UTC()
 	for _, inv := range s.invites {
 		if !isSuperAdmin && email != "" && !strings.EqualFold(inv.Email, email) {
 			continue
@@ -288,6 +327,7 @@ func (s *MemoryStore) ListInvitesForHuman(humanID, humanEmail string, isSuperAdm
 		if !ok {
 			continue
 		}
+		inv = deriveInviteStatus(inv, now)
 		out = append(out, model.InviteWithOrg{
 			Invite: inv,
 			Org:    org,
@@ -297,6 +337,31 @@ func (s *MemoryStore) ListInvitesForHuman(humanID, humanEmail string, isSuperAdm
 		return out[i].Invite.CreatedAt.After(out[j].Invite.CreatedAt)
 	})
 	return out
+}
+
+func (s *MemoryStore) ListOrgInvites(orgID, requesterHumanID string, isSuperAdmin bool) ([]model.Invite, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if _, ok := s.orgs[orgID]; !ok {
+		return nil, ErrOrgNotFound
+	}
+	if !isSuperAdmin && !hasRoleAtLeast(s.membershipRoleLocked(orgID, requesterHumanID), model.RoleAdmin) {
+		return nil, ErrUnauthorizedRole
+	}
+
+	now := time.Now().UTC()
+	out := make([]model.Invite, 0)
+	for _, inv := range s.invites {
+		if inv.OrgID != orgID {
+			continue
+		}
+		out = append(out, deriveInviteStatus(inv, now))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	return out, nil
 }
 
 func (s *MemoryStore) RevokeInvite(inviteID, actorHumanID, actorEmail string, isSuperAdmin bool, now time.Time) (model.Invite, error) {
@@ -323,10 +388,49 @@ func (s *MemoryStore) RevokeInvite(inviteID, actorHumanID, actorEmail string, is
 	if invite.Status == model.StatusRevoked {
 		return invite, nil
 	}
+	delete(s.inviteBySecretHash, invite.InviteSecret)
 	invite.Status = model.StatusRevoked
+	revokedAt := now
+	invite.RevokedAt = &revokedAt
 	s.invites[inviteID] = invite
 	s.appendAuditLocked(invite.OrgID, actorHumanID, "invite", "revoke", inviteID, nil, now)
 	return invite, nil
+}
+
+func (s *MemoryStore) RevokeMembership(orgID, humanID, actorHumanID string, isSuperAdmin bool, now time.Time) (model.Membership, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.orgs[orgID]; !ok {
+		return model.Membership{}, ErrOrgNotFound
+	}
+	targetMembershipID, ok := s.membershipByOrgUser[orgHumanKey(orgID, humanID)]
+	if !ok {
+		return model.Membership{}, ErrMembershipNotFound
+	}
+	targetMembership, ok := s.memberships[targetMembershipID]
+	if !ok || targetMembership.Status != model.StatusActive {
+		return model.Membership{}, ErrMembershipNotFound
+	}
+
+	actorRole := s.membershipRoleLocked(orgID, actorHumanID)
+	if !isSuperAdmin && !hasRoleAtLeast(actorRole, model.RoleAdmin) {
+		return model.Membership{}, ErrUnauthorizedRole
+	}
+
+	if targetMembership.Role == model.RoleOwner {
+		return model.Membership{}, ErrCannotRevokeOwner
+	}
+	if !isSuperAdmin && actorRole == model.RoleAdmin && targetMembership.Role == model.RoleAdmin {
+		return model.Membership{}, ErrUnauthorizedRole
+	}
+
+	targetMembership.Status = model.StatusRevoked
+	s.memberships[targetMembershipID] = targetMembership
+	s.appendAuditLocked(orgID, actorHumanID, "membership", "revoke", humanID, map[string]any{
+		"role": targetMembership.Role,
+	}, now)
+	return targetMembership, nil
 }
 
 func (s *MemoryStore) CreateOrgAccessKey(
@@ -1247,6 +1351,17 @@ func (s *MemoryStore) last7DaysLocked(orgID string, now time.Time) []model.OrgDa
 		out = append(out, row)
 	}
 	return out
+}
+
+func deriveInviteStatus(invite model.Invite, now time.Time) model.Invite {
+	if invite.Status == model.StatusPending && !invite.ExpiresAt.IsZero() && now.After(invite.ExpiresAt) {
+		invite.Status = model.StatusExpired
+		if invite.RevokedAt == nil {
+			expiredAt := invite.ExpiresAt
+			invite.RevokedAt = &expiredAt
+		}
+	}
+	return invite
 }
 
 func applyTrustRequest(edge model.TrustEdge, isLeftRequester bool, now time.Time) model.TrustEdge {
