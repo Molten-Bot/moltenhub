@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Statocyst Organization</title>
+    <style>
+      :root {
+        --bg: #f6f7f9;
+        --ink: #1f2933;
+        --muted: #52606d;
+        --panel: #ffffff;
+        --line: #d9e2ec;
+        --accent: #0b7285;
+      }
+      body {
+        margin: 0;
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background: linear-gradient(180deg, #f8fafc, #eef2f7);
+      }
+      header {
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--line);
+        background: #fff;
+      }
+      nav a {
+        margin-right: 12px;
+        color: var(--accent);
+        text-decoration: none;
+        font-weight: 600;
+      }
+      main {
+        max-width: 1100px;
+        margin: 16px auto;
+        padding: 0 12px 24px;
+      }
+      .banner {
+        border: 1px solid var(--line);
+        background: #fff;
+        border-radius: 8px;
+        padding: 10px;
+        margin-bottom: 12px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 12px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 12px;
+      }
+      h2 {
+        margin: 4px 0 10px;
+        font-size: 1rem;
+      }
+      input,
+      button,
+      select {
+        width: 100%;
+        box-sizing: border-box;
+        margin: 5px 0;
+        padding: 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #fff;
+      }
+      button {
+        background: var(--accent);
+        color: #fff;
+        border-color: var(--accent);
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: #fff;
+        color: var(--ink);
+      }
+      pre {
+        background: #0f172a;
+        color: #cbd5e1;
+        border-radius: 6px;
+        padding: 8px;
+        overflow: auto;
+        max-height: 240px;
+      }
+      .status {
+        margin-top: 6px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 8px;
+      }
+      .status.warn {
+        background: #fef9c3;
+        border-color: #facc15;
+        color: #713f12;
+      }
+      .muted {
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>Statocyst</strong>
+      <nav style="margin-top: 6px">
+        <a href="/profile">Profile</a>
+        <a href="/organization">Organization</a>
+        <a href="/agents">Agents</a>
+        <a href="/domains">Domains (Legacy)</a>
+      </nav>
+    </header>
+
+    <main>
+      <div class="banner">
+        <strong>/organization</strong> is for organization admins/owners to manage organizations, invite humans,
+        and view trust/audit metrics. Invited non-admin users can still access profile pages, but org management
+        actions are enforced by backend roles.
+      </div>
+
+      <div class="grid">
+        <section class="panel">
+          <h2>Session</h2>
+          <div id="configSummary" class="muted">Loading auth config...</div>
+          <input id="authToken" placeholder="Bearer token (auto-saved from login)" />
+          <input id="humanId" placeholder="Dev header: X-Human-Id" />
+          <input id="humanEmail" placeholder="Dev header: X-Human-Email" />
+          <button id="btnSaveSession">Save Session</button>
+          <button id="btnClearSession" class="secondary">Clear Session</button>
+          <button id="btnGoLogin" class="secondary">Go to Login</button>
+          <div id="sessionStatus" class="status"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Organizations</h2>
+          <input id="orgName" placeholder="New organization name" />
+          <button id="btnCreateOrg">Create Organization</button>
+          <button id="btnListOrgs">List My Organizations</button>
+          <select id="orgSelect"></select>
+          <pre id="orgOut"></pre>
+        </section>
+
+        <section class="panel">
+          <h2>Invite Humans</h2>
+          <p class="muted">Send organization invites by email.</p>
+          <input id="inviteEmail" placeholder="invite email" />
+          <select id="inviteRole">
+            <option value="admin">admin</option>
+            <option value="member">member</option>
+            <option value="viewer">viewer</option>
+          </select>
+          <button id="btnInvite">Create Invite</button>
+          <button id="btnListHumans">List Organization Humans</button>
+          <pre id="inviteOut"></pre>
+          <pre id="humansOut"></pre>
+        </section>
+
+        <section class="panel">
+          <h2>Organization Metrics</h2>
+          <p class="muted">Graph, audit stream, and stats are visible here per selected organization.</p>
+          <button id="btnStats">Load Stats</button>
+          <button id="btnGraph">Load Trust Graph</button>
+          <button id="btnAudit">Load Audit</button>
+          <pre id="statsOut"></pre>
+          <pre id="graphOut"></pre>
+          <pre id="auditOut"></pre>
+        </section>
+      </div>
+    </main>
+
+    <script src="/common.js"></script>
+    <script src="/organization.js"></script>
+  </body>
+</html>

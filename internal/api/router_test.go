@@ -516,7 +516,7 @@ func TestAdminSnapshotDoesNotLeakMessagePayloads(t *testing.T) {
 	}
 }
 
-func TestUIRoutes_LoginAndDomains(t *testing.T) {
+func TestUIRoutes_MainPages(t *testing.T) {
 	router := newTestRouter()
 
 	testCases := []struct {
@@ -525,6 +525,10 @@ func TestUIRoutes_LoginAndDomains(t *testing.T) {
 	}{
 		{path: "/", contentHint: "Statocyst Human Login"},
 		{path: "/index.html", contentHint: "Statocyst Human Login"},
+		{path: "/profile", contentHint: "/profile"},
+		{path: "/profile/", contentHint: "/profile"},
+		{path: "/organization", contentHint: "/organization"},
+		{path: "/agents", contentHint: "/agents"},
 		{path: "/domains", contentHint: "Statocyst Domains UI"},
 		{path: "/domains/", contentHint: "Statocyst Domains UI"},
 	}
@@ -546,7 +550,15 @@ func TestUIRoutes_LoginAndDomains(t *testing.T) {
 func TestUIRoutes_JavascriptAssets(t *testing.T) {
 	router := newTestRouter()
 
-	testCases := []string{"/login.js", "/app.js", "/domains/app.js"}
+	testCases := []string{
+		"/login.js",
+		"/common.js",
+		"/profile.js",
+		"/organization.js",
+		"/agents.js",
+		"/app.js",
+		"/domains/app.js",
+	}
 	for _, path := range testCases {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		resp := httptest.NewRecorder()
