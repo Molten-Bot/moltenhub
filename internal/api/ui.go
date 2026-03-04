@@ -48,6 +48,10 @@ func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "route not found")
 		return
 	}
+	if h.headlessMode {
+		writeError(w, http.StatusNotFound, "not_found", "route not found")
+		return
+	}
 
 	switch r.URL.Path {
 	case "/", "/index.html":

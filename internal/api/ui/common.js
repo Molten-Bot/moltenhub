@@ -116,7 +116,7 @@ const StatocystUI = (() => {
     for (const membership of r.data.memberships) {
       const opt = document.createElement("option");
       opt.value = membership.org.org_id;
-      opt.textContent = `${membership.org.name} (${membership.membership.role})`;
+      opt.textContent = `${membership.org.display_name || membership.org.handle} (${membership.membership.role})`;
       select.appendChild(opt);
     }
 

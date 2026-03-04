@@ -67,7 +67,8 @@
       {{if .Organizations}}
       {{range .Organizations}}
       <section class="card">
-        <h2>Organization: {{.Handle}}</h2>
+        <h2>Organization: {{if .DisplayName}}{{.DisplayName}}{{else}}{{.Handle}}{{end}}</h2>
+        <p class="muted">Handle: {{.Handle}}</p>
 
         {{if .Humans}}
         <h3>Humans</h3>

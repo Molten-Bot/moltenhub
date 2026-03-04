@@ -19,22 +19,24 @@ const (
 )
 
 type Organization struct {
-	OrgID     string    `json:"org_id"`
-	Name      string    `json:"name"`
-	IsPublic  bool      `json:"is_public"`
-	CreatedAt time.Time `json:"created_at"`
-	CreatedBy string    `json:"created_by"`
+	OrgID       string    `json:"org_id"`
+	Handle      string    `json:"handle"`
+	DisplayName string    `json:"display_name"`
+	IsPublic    bool      `json:"is_public"`
+	CreatedAt   time.Time `json:"created_at"`
+	CreatedBy   string    `json:"created_by"`
 }
 
 type Human struct {
-	HumanID       string    `json:"human_id"`
-	Handle        string    `json:"handle"`
-	AuthProvider  string    `json:"auth_provider"`
-	AuthSubject   string    `json:"auth_subject"`
-	Email         string    `json:"email"`
-	EmailVerified bool      `json:"email_verified"`
-	IsPublic      bool      `json:"is_public"`
-	CreatedAt     time.Time `json:"created_at"`
+	HumanID           string     `json:"human_id"`
+	Handle            string     `json:"handle"`
+	HandleConfirmedAt *time.Time `json:"handle_confirmed_at,omitempty"`
+	AuthProvider      string     `json:"auth_provider"`
+	AuthSubject       string     `json:"auth_subject"`
+	Email             string     `json:"email"`
+	EmailVerified     bool       `json:"email_verified"`
+	IsPublic          bool       `json:"is_public"`
+	CreatedAt         time.Time  `json:"created_at"`
 }
 
 type Membership struct {

@@ -39,7 +39,7 @@ function renderOrgs(memberships) {
   }
 
   const list = memberships
-    .map((m) => m?.org?.name)
+    .map((m) => m?.org?.display_name || m?.org?.handle)
     .filter((name) => typeof name === "string" && name.trim() !== "");
 
   if (list.length === 0) {
@@ -138,7 +138,7 @@ function renderInvites(invites) {
 
     const title = document.createElement("div");
     title.className = "value";
-    title.textContent = org.name || "Organization";
+    title.textContent = org.display_name || org.handle || "Organization";
     card.appendChild(title);
 
     const meta = document.createElement("div");

@@ -45,7 +45,7 @@ function requireOrg(statusID, message = "Select an organization first.") {
 
 function orgNameByID(orgID) {
   const org = orgByID[orgID];
-  if (org && org.name) return org.name;
+  if (org && (org.display_name || org.handle)) return org.display_name || org.handle;
   return orgID;
 }
 
@@ -118,7 +118,7 @@ async function listOrgs(preserveCurrent = true) {
   } else {
     for (const item of memberships) {
       const li = document.createElement("li");
-      li.textContent = `${item.org.name} (${item.membership.role})`;
+      li.textContent = `${item.org.display_name || item.org.handle} (${item.membership.role})`;
       orgList.appendChild(li);
     }
     setStatus("orgStatus", `${memberships.length} organization(s) loaded.`);
@@ -129,7 +129,7 @@ async function listOrgs(preserveCurrent = true) {
   for (const item of memberships) {
     const opt = document.createElement("option");
     opt.value = item.org.org_id;
-    opt.textContent = `${item.org.name} (${item.membership.role})`;
+    opt.textContent = `${item.org.display_name || item.org.handle} (${item.membership.role})`;
     select.appendChild(opt);
   }
 
@@ -155,21 +155,24 @@ async function listOrgs(preserveCurrent = true) {
 }
 
 async function createOrg() {
-  const name = UI.$("orgName").value.trim();
-  if (!name) {
-    setStatus("orgStatus", "Organization name is required.", true);
+  const handleInput = UI.$("orgName").value.trim();
+  if (!handleInput) {
+    setStatus("orgStatus", "Organization handle is required.", true);
     return;
   }
 
   setStatus("orgStatus", "Creating organization...");
-  const res = await UI.req("/v1/orgs", "POST", { name });
+  const res = await UI.req("/v1/orgs", "POST", {
+    handle: handleInput,
+    display_name: handleInput,
+  });
   if (res.status !== 201) {
     const err = String(res?.data?.error || "");
-    if (res.status === 409 || err === "org_name_exists") {
-      setStatus("orgStatus", "Organization name already exists. Choose a different name.", true);
+    if (res.status === 409 || err === "org_handle_exists") {
+      setStatus("orgStatus", "Organization handle already exists. Choose a different one.", true);
       return;
     }
-    if (err === "invalid_name") {
+    if (err === "invalid_handle") {
       setStatus("orgStatus", "Organization handle must be URL-safe (a-z, 0-9, ., _, -).", true);
       return;
     }
