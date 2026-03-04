@@ -49,6 +49,21 @@ UI hot-refresh mode (no restart needed for `internal/api/ui/*` edits):
 STATOCYST_UI_DEV_MODE=true go run ./cmd/statocystd
 ```
 
+### `.env` Local Dev (recommended)
+
+The server auto-loads `.env` from repo root when present. Existing shell env vars still win.
+
+```bash
+cp .env.example .env
+go run ./cmd/statocystd
+```
+
+Useful local keys:
+
+- `DEV_LOGIN_HUMAN_ID` and `DEV_LOGIN_HUMAN_EMAIL`: dev identity used by `/` login page in `HUMAN_AUTH_PROVIDER=dev`.
+- `DEV_LOGIN_AUTO=true`: auto-redirect from login page into `/profile` as that dev user.
+- `SUPER_ADMIN_REVIEW_MODE=true` + `SUPER_ADMIN_EMAILS=...`: test super-admin visibility/behavior locally.
+
 Test UI changes locally without Docker Hub:
 
 ```bash
