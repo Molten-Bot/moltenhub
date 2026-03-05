@@ -38,8 +38,12 @@ ALICE_HID="$(docker exec multi-agent-crab-1 bash -lc "curl -sS $BASE_URL/v1/me -
 BOB_HID="$(docker exec multi-agent-crab-1 bash -lc "curl -sS $BASE_URL/v1/me -H 'X-Human-Id: $BOB_ID' -H 'X-Human-Email: $BOB_EMAIL'" | python3 -c 'import json,sys; print(json.load(sys.stdin)["human"]["human_id"])')"
 
 echo "[bootstrap] registering agents"
-CRAB_TOKEN="$(docker exec multi-agent-crab-1 bash -lc "curl -sS -X POST $BASE_URL/v1/agents/register -H 'Content-Type: application/json' -H 'X-Human-Id: $ALICE_ID' -H 'X-Human-Email: $ALICE_EMAIL' -d '{\"org_id\":\"$ORG_A\",\"agent_id\":\"$CRAB_AGENT_ID\",\"owner_human_id\":\"$ALICE_HID\"}'" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
-SHRIMP_TOKEN="$(docker exec multi-agent-crab-1 bash -lc "curl -sS -X POST $BASE_URL/v1/agents/register -H 'Content-Type: application/json' -H 'X-Human-Id: $BOB_ID' -H 'X-Human-Email: $BOB_EMAIL' -d '{\"org_id\":\"$ORG_B\",\"agent_id\":\"$SHRIMP_AGENT_ID\",\"owner_human_id\":\"$BOB_HID\"}'" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
+CRAB_REGISTER_JSON="$(docker exec multi-agent-crab-1 bash -lc "curl -sS -X POST $BASE_URL/v1/agents/register -H 'Content-Type: application/json' -H 'X-Human-Id: $ALICE_ID' -H 'X-Human-Email: $ALICE_EMAIL' -d '{\"org_id\":\"$ORG_A\",\"agent_id\":\"$CRAB_AGENT_ID\",\"owner_human_id\":\"$ALICE_HID\"}'")"
+CRAB_TOKEN="$(python3 -c 'import json,sys; p=json.loads(sys.stdin.read()); print(p["token"])' <<<"$CRAB_REGISTER_JSON")"
+CRAB_AGENT_UUID="$(python3 -c 'import json,sys; p=json.loads(sys.stdin.read()); print(p["agent_uuid"])' <<<"$CRAB_REGISTER_JSON")"
+SHRIMP_REGISTER_JSON="$(docker exec multi-agent-crab-1 bash -lc "curl -sS -X POST $BASE_URL/v1/agents/register -H 'Content-Type: application/json' -H 'X-Human-Id: $BOB_ID' -H 'X-Human-Email: $BOB_EMAIL' -d '{\"org_id\":\"$ORG_B\",\"agent_id\":\"$SHRIMP_AGENT_ID\",\"owner_human_id\":\"$BOB_HID\"}'")"
+SHRIMP_TOKEN="$(python3 -c 'import json,sys; p=json.loads(sys.stdin.read()); print(p["token"])' <<<"$SHRIMP_REGISTER_JSON")"
+SHRIMP_AGENT_UUID="$(python3 -c 'import json,sys; p=json.loads(sys.stdin.read()); print(p["agent_uuid"])' <<<"$SHRIMP_REGISTER_JSON")"
 
 docker exec multi-agent-crab-1 bash -lc "umask 077; printf '%s\n' '$CRAB_TOKEN' > /tmp/${CRAB_AGENT_ID}.token"
 docker exec multi-agent-shrimp-1 bash -lc "umask 077; printf '%s\n' '$SHRIMP_TOKEN' > /tmp/${SHRIMP_AGENT_ID}.token"
@@ -49,11 +53,11 @@ ORG_TRUST_ID="$(docker exec multi-agent-crab-1 bash -lc "curl -sS -X POST $BASE_
 docker exec multi-agent-crab-1 bash -lc "curl -sS -X POST $BASE_URL/v1/org-trusts/$ORG_TRUST_ID/approve -H 'X-Human-Id: $BOB_ID' -H 'X-Human-Email: $BOB_EMAIL' >/tmp/org_trust_approve.json"
 
 echo "[bootstrap] activating agent trust"
-AGENT_TRUST_ID="$(docker exec multi-agent-crab-1 bash -lc "curl -sS -X POST $BASE_URL/v1/agent-trusts -H 'Content-Type: application/json' -H 'X-Human-Id: $ALICE_ID' -H 'X-Human-Email: $ALICE_EMAIL' -d '{\"org_id\":\"$ORG_A\",\"agent_id\":\"$CRAB_AGENT_ID\",\"peer_agent_id\":\"$SHRIMP_AGENT_ID\"}'" | python3 -c 'import json,sys; print(json.load(sys.stdin)["trust"]["edge_id"])')"
+AGENT_TRUST_ID="$(docker exec multi-agent-crab-1 bash -lc "curl -sS -X POST $BASE_URL/v1/agent-trusts -H 'Content-Type: application/json' -H 'X-Human-Id: $ALICE_ID' -H 'X-Human-Email: $ALICE_EMAIL' -d '{\"org_id\":\"$ORG_A\",\"agent_uuid\":\"$CRAB_AGENT_UUID\",\"peer_agent_uuid\":\"$SHRIMP_AGENT_UUID\"}'" | python3 -c 'import json,sys; print(json.load(sys.stdin)["trust"]["edge_id"])')"
 docker exec multi-agent-crab-1 bash -lc "curl -sS -X POST $BASE_URL/v1/agent-trusts/$AGENT_TRUST_ID/approve -H 'X-Human-Id: $BOB_ID' -H 'X-Human-Email: $BOB_EMAIL' >/tmp/agent_trust_approve.json"
 
 echo "[bootstrap] running exchange smoke test"
-EXCHANGE_JSON="$(docker exec multi-agent-crab-1 bash -lc "/mnt/skills/openclaw-exchange-messages/scripts/exchange_roundtrip.sh '$BASE_URL' '$CRAB_AGENT_ID' '$CRAB_TOKEN' '$SHRIMP_AGENT_ID' '$SHRIMP_TOKEN' 'bootstrap-ping' 'bootstrap-pong' 5000")"
+EXCHANGE_JSON="$(docker exec multi-agent-crab-1 bash -lc "/mnt/skills/openclaw-exchange-messages/scripts/exchange_roundtrip.sh '$BASE_URL' '$CRAB_AGENT_UUID' '$CRAB_TOKEN' '$SHRIMP_AGENT_UUID' '$SHRIMP_TOKEN' 'bootstrap-ping' 'bootstrap-pong' 5000")"
 
 python3 - <<PY
 import json

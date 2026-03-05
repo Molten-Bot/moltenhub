@@ -143,12 +143,12 @@
 
         <section class="panel">
           <h2>Agents</h2>
-          <input id="agentId" placeholder="agent_id" />
+          <input id="agentId" placeholder="agent_uuid" />
           <input id="ownerHumanId" placeholder="owner_human_id (optional)" />
           <button id="btnRegisterAgent">Register Agent</button>
           <button id="btnCreateBindToken">Create Bind Token (15m)</button>
           <pre id="bindOut"></pre>
-          <input id="rotateAgentId" placeholder="agent_id to rotate/revoke" />
+          <input id="rotateAgentId" placeholder="agent_uuid to rotate/revoke" />
           <button id="btnRotateAgent">Rotate Token</button>
           <button id="btnRevokeAgent">Revoke Agent</button>
           <button id="btnListAgents">List Org Agents</button>
@@ -168,8 +168,8 @@
 
         <section class="panel">
           <h2>Agent Trust</h2>
-          <input id="trustAgentId" placeholder="agent_id" />
-          <input id="trustPeerAgentId" placeholder="peer_agent_id" />
+          <input id="trustAgentId" placeholder="agent_uuid" />
+          <input id="trustPeerAgentId" placeholder="peer_agent_uuid" />
           <button id="btnReqAgentTrust">Request Agent Trust</button>
           <input id="agentTrustId" placeholder="agent trust edge_id" />
           <button id="btnApproveAgentTrust">Approve Agent Trust</button>

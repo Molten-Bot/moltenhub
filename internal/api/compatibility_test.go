@@ -107,12 +107,13 @@ func parseRouterRegisteredPaths(t *testing.T) []string {
 
 func makeConcretePath(specPath string) string {
 	replacements := map[string]string{
-		"{org_id}":    "org-test",
-		"{invite_id}": "invite-test",
-		"{key_id}":    "key-test",
-		"{human_id}":  "human-test",
-		"{agent_id}":  "agent-test",
-		"{id}":        "edge-test",
+		"{org_id}":     "org-test",
+		"{invite_id}":  "invite-test",
+		"{key_id}":     "key-test",
+		"{human_id}":   "human-test",
+		"{agent_id}":   "agent-test",
+		"{agent_uuid}": "11111111-1111-1111-1111-111111111111",
+		"{id}":         "edge-test",
 	}
 	path := specPath
 	for from, to := range replacements {

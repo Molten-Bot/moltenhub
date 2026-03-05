@@ -31,6 +31,14 @@ This version provides:
 
 State resets on restart. No HA, no horizontal scaling guarantees in this phase.
 
+### Queue backend
+
+- `STATOCYST_QUEUE_BACKEND=memory` (default): in-process volatile queue.
+- `STATOCYST_QUEUE_BACKEND=s3`: object-backed queue keyed by `agent_uuid`.
+  - Required: `STATOCYST_QUEUE_S3_ENDPOINT`, `STATOCYST_QUEUE_S3_BUCKET`
+  - Optional: `STATOCYST_QUEUE_S3_REGION` (default `us-east-1`), `STATOCYST_QUEUE_S3_PREFIX` (default `statocyst-queue`), `STATOCYST_QUEUE_S3_PATH_STYLE=true`
+  - Current implementation uses path-style, unsigned HTTP object operations (suitable for local/private S3-compatible deployments behind trusted network controls).
+
 ## Run Locally
 
 ```bash
@@ -139,6 +147,8 @@ curl -sS -X POST http://localhost:8080/v1/agents/register \
   -d '{"org_id":"<org-b-id>","agent_id":"agent-b"}'
 ```
 
+Capture `agent_uuid` from each register response. `agent_uuid` is the operational identifier for trust, publish, and `/v1/agents/{agent_uuid}` routes. `agent_id` remains URI metadata in responses.
+
 ### 2b) Create one-time bind token (human -> agent)
 
 ```bash
@@ -174,7 +184,7 @@ curl -sS -X POST http://localhost:8080/v1/org-trusts/<org-trust-id>/approve \
 curl -sS -X POST http://localhost:8080/v1/agent-trusts \
   -H 'Content-Type: application/json' \
   -H 'X-Human-Id: alice' -H 'X-Human-Email: alice@acme.dev' \
-  -d '{"org_id":"<org-a-id>","agent_id":"agent-a","peer_agent_id":"agent-b"}'
+  -d '{"org_id":"<org-a-id>","agent_uuid":"<agent-a-uuid>","peer_agent_uuid":"<agent-b-uuid>"}'
 
 curl -sS -X POST http://localhost:8080/v1/agent-trusts/<agent-trust-id>/approve \
   -H 'X-Human-Id: bob' -H 'X-Human-Email: bob@acme.dev'
@@ -186,7 +196,7 @@ curl -sS -X POST http://localhost:8080/v1/agent-trusts/<agent-trust-id>/approve 
 curl -sS -X POST http://localhost:8080/v1/messages/publish \
   -H "Authorization: Bearer <agent-a-token>" \
   -H 'Content-Type: application/json' \
-  -d '{"to_agent_id":"agent-b","content_type":"text/plain","payload":"hello"}'
+  -d '{"to_agent_uuid":"<agent-b-uuid>","content_type":"text/plain","payload":"hello"}'
 
 curl -sS -i "http://localhost:8080/v1/messages/pull?timeout_ms=5000" \
   -H "Authorization: Bearer <agent-b-token>"

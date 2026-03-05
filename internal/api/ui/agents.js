@@ -40,6 +40,7 @@ function buildAgentBindPrompt(bindToken, expiresAt, redeemURL) {
     `  -d '{"bind_token":"${bindToken}","agent_id":"<agent_id>"}'`,
     "",
     "3. Parse JSON response and return:",
+    "- agent_uuid",
     "- agent_id",
     "- org_id",
     "- token",
@@ -79,15 +80,16 @@ function syncBondSelectors(agents) {
   right.disabled = false;
 
   for (const agent of activeAgents) {
-    const text = `${agent.agent_id || ""} (${agent.owner_human_id || "org-owned"})`;
+    const text = `${agent.agent_id || ""} [${agent.agent_uuid || ""}] (${agent.owner_human_id || "org-owned"})`;
+    const value = agent.agent_uuid || "";
 
     const leftOpt = document.createElement("option");
-    leftOpt.value = agent.agent_id || "";
+    leftOpt.value = value;
     leftOpt.textContent = text;
     left.appendChild(leftOpt);
 
     const rightOpt = document.createElement("option");
-    rightOpt.value = agent.agent_id || "";
+    rightOpt.value = value;
     rightOpt.textContent = text;
     right.appendChild(rightOpt);
   }
@@ -129,7 +131,7 @@ function renderAgents(agents) {
     const tr = document.createElement("tr");
 
     const tdID = document.createElement("td");
-    tdID.textContent = agent.agent_id || "";
+    tdID.textContent = `${agent.agent_id || ""}\n${agent.agent_uuid || ""}`;
     tr.appendChild(tdID);
 
     const tdOrg = document.createElement("td");
@@ -155,21 +157,21 @@ function renderAgents(agents) {
     const rotateBtn = document.createElement("button");
     rotateBtn.textContent = "Rotate Token";
     rotateBtn.dataset.agentAction = "rotate";
-    rotateBtn.dataset.agentId = agent.agent_id || "";
+    rotateBtn.dataset.agentUuid = agent.agent_uuid || "";
     rotateBtn.disabled = String(agent.status || "").toLowerCase() === "revoked";
     actionWrap.appendChild(rotateBtn);
 
     const revokeBtn = document.createElement("button");
     revokeBtn.textContent = "Revoke Agent";
     revokeBtn.dataset.agentAction = "revoke";
-    revokeBtn.dataset.agentId = agent.agent_id || "";
+    revokeBtn.dataset.agentUuid = agent.agent_uuid || "";
     revokeBtn.disabled = String(agent.status || "").toLowerCase() === "revoked";
     actionWrap.appendChild(revokeBtn);
 
     const visibilityBtn = document.createElement("button");
     visibilityBtn.textContent = agent.is_public ? "Make Private" : "Make Public";
     visibilityBtn.dataset.agentAction = "visibility";
-    visibilityBtn.dataset.agentId = agent.agent_id || "";
+    visibilityBtn.dataset.agentUuid = agent.agent_uuid || "";
     visibilityBtn.dataset.makePublic = agent.is_public ? "false" : "true";
     visibilityBtn.disabled = String(agent.status || "").toLowerCase() === "revoked";
     actionWrap.appendChild(visibilityBtn);
@@ -213,53 +215,53 @@ async function createBindCode() {
   setBindCodeStatus(buildAgentBindPrompt(token, expiresAt, redeemURL));
 }
 
-async function rotateAgent(agentID) {
-  if (!agentID) {
-    setStatus("agentStatus", "agent_id required", true);
+async function rotateAgent(agentUUID) {
+  if (!agentUUID) {
+    setStatus("agentStatus", "agent_uuid required", true);
     return;
   }
 
-  setStatus("agentStatus", `Rotating token for ${agentID}...`);
-  const result = await UI.req(`/v1/agents/${encodeURIComponent(agentID)}/rotate-token`, "POST");
+  setStatus("agentStatus", `Rotating token for ${agentUUID}...`);
+  const result = await UI.req(`/v1/agents/${encodeURIComponent(agentUUID)}/rotate-token`, "POST");
   if (result.status !== 200) {
     setStatus("agentStatus", "Could not rotate token.", true);
     return;
   }
-  setStatus("agentStatus", `Token rotated for ${agentID}.`);
+  setStatus("agentStatus", `Token rotated for ${agentUUID}.`);
 }
 
-async function revokeAgent(agentID) {
-  if (!agentID) {
-    setStatus("agentStatus", "agent_id required", true);
+async function revokeAgent(agentUUID) {
+  if (!agentUUID) {
+    setStatus("agentStatus", "agent_uuid required", true);
     return;
   }
 
-  setStatus("agentStatus", `Revoking ${agentID}...`);
-  const result = await UI.req(`/v1/agents/${encodeURIComponent(agentID)}`, "DELETE");
+  setStatus("agentStatus", `Revoking ${agentUUID}...`);
+  const result = await UI.req(`/v1/agents/${encodeURIComponent(agentUUID)}`, "DELETE");
   if (result.status !== 200) {
     setStatus("agentStatus", "Could not revoke agent.", true);
     return;
   }
 
-  setStatus("agentStatus", `Revoked ${agentID}.`);
+  setStatus("agentStatus", `Revoked ${agentUUID}.`);
   await loadAgents();
   await loadPendingTrusts();
 }
 
-async function setAgentVisibility(agentID, makePublic) {
-  if (!agentID) {
-    setStatus("agentStatus", "agent_id required", true);
+async function setAgentVisibility(agentUUID, makePublic) {
+  if (!agentUUID) {
+    setStatus("agentStatus", "agent_uuid required", true);
     return;
   }
-  setStatus("agentStatus", `Updating visibility for ${agentID}...`);
-  const result = await UI.req(`/v1/agents/${encodeURIComponent(agentID)}`, "PATCH", {
+  setStatus("agentStatus", `Updating visibility for ${agentUUID}...`);
+  const result = await UI.req(`/v1/agents/${encodeURIComponent(agentUUID)}`, "PATCH", {
     is_public: makePublic,
   });
   if (result.status !== 200) {
     setStatus("agentStatus", "Could not update agent visibility.", true);
     return;
   }
-  setStatus("agentStatus", `Visibility updated for ${agentID}.`);
+  setStatus("agentStatus", `Visibility updated for ${agentUUID}.`);
   await loadAgents();
 }
 
@@ -344,21 +346,21 @@ async function loadPendingTrusts() {
 }
 
 async function createTrust() {
-  const agentID = UI.$("trustAgentId").value.trim();
-  const peerAgentID = UI.$("trustPeerAgentId").value.trim();
-  if (!agentID || !peerAgentID) {
+  const agentUUID = UI.$("trustAgentId").value.trim();
+  const peerAgentUUID = UI.$("trustPeerAgentId").value.trim();
+  if (!agentUUID || !peerAgentUUID) {
     setStatus("pendingStatus", "Select both agents.", true);
     return;
   }
-  if (agentID === peerAgentID) {
+  if (agentUUID === peerAgentUUID) {
     setStatus("pendingStatus", "Choose two different agents.", true);
     return;
   }
 
   setStatus("pendingStatus", "Creating bond...");
   const result = await UI.req("/v1/me/agent-trusts", "POST", {
-    agent_id: agentID,
-    peer_agent_id: peerAgentID,
+    agent_uuid: agentUUID,
+    peer_agent_uuid: peerAgentUUID,
   });
   if (result.status !== 200 && result.status !== 201) {
     setStatus("pendingStatus", "Could not create bond.", true);
@@ -397,20 +399,20 @@ async function init() {
     if (!button) return;
 
     const action = button.dataset.agentAction || "";
-    const agentID = button.dataset.agentId || "";
-    if (!action || !agentID) return;
+    const agentUUID = button.dataset.agentUuid || "";
+    if (!action || !agentUUID) return;
 
     if (action === "rotate") {
-      await rotateAgent(agentID);
+      await rotateAgent(agentUUID);
       return;
     }
     if (action === "revoke") {
-      await revokeAgent(agentID);
+      await revokeAgent(agentUUID);
       return;
     }
     if (action === "visibility") {
       const makePublic = String(button.dataset.makePublic || "false") === "true";
-      await setAgentVisibility(agentID, makePublic);
+      await setAgentVisibility(agentUUID, makePublic);
       return;
     }
   });

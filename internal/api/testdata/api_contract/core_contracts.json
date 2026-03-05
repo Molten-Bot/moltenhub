@@ -83,7 +83,7 @@
         "Authorization": "Bearer __TOKEN_A__"
       },
       "body": {
-        "to_agent_id": "agent-b",
+        "to_agent_uuid": "__AGENT_UUID_B__",
         "content_type": "text/plain",
         "payload": "fixture-ping"
       },
@@ -102,7 +102,7 @@
         "Authorization": "Bearer __TOKEN_A__"
       },
       "body": {
-        "to_agent_id": "agent-b",
+        "to_agent_uuid": "__AGENT_UUID_B__",
         "content_type": "text/plain",
         "payload": "fixture-ping"
       },

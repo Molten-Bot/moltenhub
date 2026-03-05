@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,23 +58,23 @@ func TestMessageQueueConformanceVectors(t *testing.T) {
 					now := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
 
 					_, _, receiver := seedOrgAndAgent(t, mem, ids, now, "alice", "alice@a.test", "org-a", "Org A", "agent-a")
-					toAgentID := receiver.AgentID
+					toAgentUUID := receiver.AgentUUID
 					if tc.UnknownReceiver {
-						toAgentID = "missing-agent"
+						toAgentUUID = "missing-agent-uuid"
 					}
 
 					for _, payload := range tc.Payloads {
 						msg := model.Message{
 							MessageID:     ids.MustID(t),
-							FromAgentID:   "sender-agent",
-							ToAgentID:     toAgentID,
+							FromAgentUUID: "sender-agent-uuid",
+							ToAgentUUID:   toAgentUUID,
 							SenderOrgID:   "org-sender",
 							ReceiverOrgID: "org-receiver",
 							ContentType:   "text/plain",
 							Payload:       payload,
 							CreatedAt:     now,
 						}
-						err := mem.Enqueue(msg)
+						err := mem.Enqueue(context.Background(), msg)
 						if tc.ExpectError != "" {
 							if err == nil {
 								t.Fatalf("expected enqueue error %q, got nil", tc.ExpectError)
@@ -89,7 +90,10 @@ func TestMessageQueueConformanceVectors(t *testing.T) {
 					}
 
 					for i, wantPayload := range tc.ExpectPopPayload {
-						got, ok := mem.PopNext(receiver.AgentID)
+						got, ok, err := mem.Dequeue(context.Background(), receiver.AgentUUID)
+						if err != nil {
+							t.Fatalf("dequeue %d failed: %v", i, err)
+						}
 						if !ok {
 							t.Fatalf("pop %d missing, expected payload %q", i, wantPayload)
 						}
@@ -99,7 +103,9 @@ func TestMessageQueueConformanceVectors(t *testing.T) {
 					}
 
 					if tc.ExpectEmptyAfter {
-						if _, ok := mem.PopNext(receiver.AgentID); ok {
+						if _, ok, err := mem.Dequeue(context.Background(), receiver.AgentUUID); err != nil {
+							t.Fatalf("final dequeue failed: %v", err)
+						} else if ok {
 							t.Fatalf("expected empty queue after pops")
 						}
 					}
@@ -152,7 +158,7 @@ func TestCanPublishConformanceVectors(t *testing.T) {
 					}
 
 					if tc.ActivateAgentTrust {
-						edge, _, err := mem.CreateOrJoinAgentTrust("", agentA.AgentID, agentB.AgentID, alice.HumanID, ids.MustID(t), now, false)
+						edge, _, err := mem.CreateOrJoinAgentTrust("", agentA.AgentUUID, agentB.AgentUUID, alice.HumanID, ids.MustID(t), now, false)
 						if err != nil {
 							t.Fatalf("create agent trust: %v", err)
 						}
@@ -173,7 +179,7 @@ func TestCanPublishConformanceVectors(t *testing.T) {
 						}
 					}
 
-					_, _, err := mem.CanPublish(agentA.AgentID, agentB.AgentID)
+					_, _, err := mem.CanPublish(agentA.AgentUUID, agentB.AgentUUID)
 					switch tc.Expect {
 					case "allow":
 						if err != nil {
