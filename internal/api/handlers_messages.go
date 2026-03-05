@@ -18,7 +18,7 @@ var allowedContentTypes = map[string]struct{}{
 }
 
 type publishRequest struct {
-	ToAgentID   string  `json:"to_agent_id"`
+	ToAgentUUID string  `json:"to_agent_uuid"`
 	ContentType string  `json:"content_type"`
 	Payload     string  `json:"payload"`
 	ClientMsgID *string `json:"client_msg_id,omitempty"`
@@ -30,7 +30,7 @@ func (h *Handler) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	senderAgentID, err := h.authenticateAgent(r)
+	senderAgentUUID, err := h.authenticateAgent(r)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
 		return
@@ -42,11 +42,11 @@ func (h *Handler) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req.ToAgentID = normalizeAgentRef(req.ToAgentID)
+	req.ToAgentUUID = normalizeUUID(req.ToAgentUUID)
 	req.ContentType = strings.TrimSpace(req.ContentType)
 
-	if !validateAgentRef(req.ToAgentID) {
-		writeError(w, http.StatusBadRequest, "invalid_to_agent_id", "to_agent_id must be handle (2-64 chars) or URI (org/agent or org/human/agent)")
+	if !validateUUID(req.ToAgentUUID) {
+		writeError(w, http.StatusBadRequest, "invalid_to_agent_uuid", "to_agent_uuid must be a valid UUID")
 		return
 	}
 	if _, ok := allowedContentTypes[req.ContentType]; !ok {
@@ -54,26 +54,27 @@ func (h *Handler) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetAgent, err := h.control.GetAgent(req.ToAgentID)
+	senderAgent, err := h.control.GetAgentByUUID(senderAgentUUID)
 	if err != nil {
-		switch {
-		case errors.Is(err, store.ErrAgentNotFound):
-			writeError(w, http.StatusNotFound, "unknown_receiver", "to_agent_id is not registered")
-		case errors.Is(err, store.ErrAgentAmbiguous):
-			writeError(w, http.StatusConflict, "ambiguous_to_agent_id", "to_agent_id matched multiple agents; use canonical agent URI")
-		default:
-			writeError(w, http.StatusInternalServerError, "store_error", "failed to resolve receiver")
-		}
+		writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
 		return
 	}
 
-	senderOrgID, receiverOrgID, err := h.control.CanPublish(senderAgentID, targetAgent.AgentID)
+	targetAgent, err := h.control.GetAgentByUUID(req.ToAgentUUID)
+	if err != nil {
+		if errors.Is(err, store.ErrAgentNotFound) {
+			writeError(w, http.StatusNotFound, "unknown_receiver", "to_agent_uuid is not registered")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "store_error", "failed to resolve receiver")
+		return
+	}
+
+	senderOrgID, receiverOrgID, err := h.control.CanPublish(senderAgentUUID, targetAgent.AgentUUID)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrAgentNotFound):
-			writeError(w, http.StatusNotFound, "unknown_receiver", "to_agent_id is not registered")
-		case errors.Is(err, store.ErrAgentAmbiguous):
-			writeError(w, http.StatusConflict, "ambiguous_to_agent_id", "to_agent_id matched multiple agents; use canonical agent URI")
+			writeError(w, http.StatusNotFound, "unknown_receiver", "to_agent_uuid is not registered")
 		case errors.Is(err, store.ErrNoTrustPath):
 			h.control.RecordMessageDropped(senderOrgID)
 			writeJSON(w, http.StatusAccepted, map[string]string{
@@ -94,7 +95,9 @@ func (h *Handler) handlePublish(w http.ResponseWriter, r *http.Request) {
 
 	message := model.Message{
 		MessageID:     messageID,
-		FromAgentID:   senderAgentID,
+		FromAgentUUID: senderAgentUUID,
+		ToAgentUUID:   targetAgent.AgentUUID,
+		FromAgentID:   senderAgent.AgentID,
 		ToAgentID:     targetAgent.AgentID,
 		SenderOrgID:   senderOrgID,
 		ReceiverOrgID: receiverOrgID,
@@ -104,9 +107,9 @@ func (h *Handler) handlePublish(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:     h.now().UTC(),
 	}
 
-	if err := h.queue.Enqueue(message); err != nil {
+	if err := h.queue.Enqueue(r.Context(), message); err != nil {
 		if errors.Is(err, store.ErrAgentNotFound) {
-			writeError(w, http.StatusNotFound, "unknown_receiver", "to_agent_id is not registered")
+			writeError(w, http.StatusNotFound, "unknown_receiver", "to_agent_uuid is not registered")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "store_error", "failed to enqueue message")
@@ -114,7 +117,7 @@ func (h *Handler) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.control.RecordMessageQueued(senderOrgID)
-	h.waiters.Notify(targetAgent.AgentID)
+	h.waiters.Notify(targetAgent.AgentUUID)
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"message_id": messageID,
 		"status":     "queued",
@@ -127,7 +130,7 @@ func (h *Handler) handlePull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	receiverAgentID, err := h.authenticateAgent(r)
+	receiverAgentUUID, err := h.authenticateAgent(r)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
 		return
@@ -141,7 +144,10 @@ func (h *Handler) handlePull(w http.ResponseWriter, r *http.Request) {
 
 	deadline := h.now().Add(timeout)
 	for {
-		if message, ok := h.queue.PopNext(receiverAgentID); ok {
+		if message, ok, err := h.queue.Dequeue(r.Context(), receiverAgentUUID); err != nil {
+			writeError(w, http.StatusInternalServerError, "store_error", "failed to dequeue message")
+			return
+		} else if ok {
 			writeJSON(w, http.StatusOK, map[string]any{"message": message})
 			return
 		}
@@ -152,8 +158,12 @@ func (h *Handler) handlePull(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		notifyCh, cancel := h.waiters.Register(receiverAgentID)
-		if message, ok := h.queue.PopNext(receiverAgentID); ok {
+		notifyCh, cancel := h.waiters.Register(receiverAgentUUID)
+		if message, ok, err := h.queue.Dequeue(r.Context(), receiverAgentUUID); err != nil {
+			cancel()
+			writeError(w, http.StatusInternalServerError, "store_error", "failed to dequeue message")
+			return
+		} else if ok {
 			cancel()
 			writeJSON(w, http.StatusOK, map[string]any{"message": message})
 			return

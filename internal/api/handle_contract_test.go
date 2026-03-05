@@ -1,13 +1,12 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 )
 
-func registerAgentWithDetails(t *testing.T, router http.Handler, humanID, email, orgID, agentID, ownerHumanID string) (string, string, string) {
+func registerAgentWithDetails(t *testing.T, router http.Handler, humanID, email, orgID, agentID, ownerHumanID string) (string, string, string, string) {
 	t.Helper()
 	ensureHandleConfirmed(t, router, humanID, email)
 
@@ -24,12 +23,13 @@ func registerAgentWithDetails(t *testing.T, router http.Handler, humanID, email,
 	}
 	payload := decodeJSONMap(t, resp.Body.Bytes())
 	token, _ := payload["token"].(string)
+	agentUUID, _ := payload["agent_uuid"].(string)
 	canonicalID, _ := payload["agent_id"].(string)
 	handle, _ := payload["handle"].(string)
-	if token == "" || canonicalID == "" || handle == "" {
-		t.Fatalf("missing token/agent_id/handle: %v", payload)
+	if token == "" || agentUUID == "" || canonicalID == "" || handle == "" {
+		t.Fatalf("missing token/agent_uuid/agent_id/handle: %v", payload)
 	}
-	return token, canonicalID, handle
+	return token, agentUUID, canonicalID, handle
 }
 
 func TestHandleContractValidationRejectsShortAndBlocked(t *testing.T) {
@@ -118,12 +118,12 @@ func TestHandleContractValidationRejectsShortAndBlocked(t *testing.T) {
 	}
 }
 
-func TestCanonicalAgentURISupportsLifecycleRoutes(t *testing.T) {
+func TestCanonicalAgentURIAndUUIDLifecycleRoutes(t *testing.T) {
 	router := newTestRouter()
 	aliceHumanID := currentHumanID(t, router, "alice", "alice@a.test")
 	orgID := createOrg(t, router, "alice", "alice@a.test", "URI Org")
 
-	_, canonicalAgentID, handle := registerAgentWithDetails(t, router, "alice", "alice@a.test", orgID, "Alpha Bot", aliceHumanID)
+	_, agentUUID, canonicalAgentID, handle := registerAgentWithDetails(t, router, "alice", "alice@a.test", orgID, "Alpha Bot", aliceHumanID)
 	if handle != "alpha-bot" {
 		t.Fatalf("expected normalized handle alpha-bot, got %q", handle)
 	}
@@ -131,101 +131,71 @@ func TestCanonicalAgentURISupportsLifecycleRoutes(t *testing.T) {
 		t.Fatalf("expected human-owned canonical URI org/human/agent, got %q", canonicalAgentID)
 	}
 
-	visibility := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/"+canonicalAgentID, map[string]any{
+	visibility := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/"+agentUUID, map[string]any{
 		"is_public": false,
 	}, humanHeaders("alice", "alice@a.test"))
 	if visibility.Code != http.StatusOK {
-		t.Fatalf("expected visibility patch with canonical URI to succeed, got %d %s", visibility.Code, visibility.Body.String())
+		t.Fatalf("expected visibility patch with agent_uuid to succeed, got %d %s", visibility.Code, visibility.Body.String())
 	}
 	visPayload := decodeJSONMap(t, visibility.Body.Bytes())
 	agentObj, _ := visPayload["agent"].(map[string]any)
 	if agentObj["agent_id"] != canonicalAgentID {
 		t.Fatalf("expected visibility response agent_id=%q, got %v", canonicalAgentID, agentObj["agent_id"])
 	}
+	if agentObj["agent_uuid"] != agentUUID {
+		t.Fatalf("expected visibility response agent_uuid=%q, got %v", agentUUID, agentObj["agent_uuid"])
+	}
 
-	rotate := doJSONRequest(t, router, http.MethodPost, "/v1/agents/"+canonicalAgentID+"/rotate-token", nil, humanHeaders("alice", "alice@a.test"))
+	rotate := doJSONRequest(t, router, http.MethodPost, "/v1/agents/"+agentUUID+"/rotate-token", nil, humanHeaders("alice", "alice@a.test"))
 	if rotate.Code != http.StatusOK {
-		t.Fatalf("expected rotate with canonical URI to succeed, got %d %s", rotate.Code, rotate.Body.String())
+		t.Fatalf("expected rotate with agent_uuid to succeed, got %d %s", rotate.Code, rotate.Body.String())
 	}
-	if decodeJSONMap(t, rotate.Body.Bytes())["agent_id"] != canonicalAgentID {
-		t.Fatalf("expected rotate response to preserve canonical agent_id")
+	if decodeJSONMap(t, rotate.Body.Bytes())["agent_uuid"] != agentUUID {
+		t.Fatalf("expected rotate response to preserve agent_uuid")
 	}
 
-	revoke := doJSONRequest(t, router, http.MethodDelete, "/v1/agents/"+canonicalAgentID, nil, humanHeaders("alice", "alice@a.test"))
+	revoke := doJSONRequest(t, router, http.MethodDelete, "/v1/agents/"+agentUUID, nil, humanHeaders("alice", "alice@a.test"))
 	if revoke.Code != http.StatusOK {
-		t.Fatalf("expected revoke with canonical URI to succeed, got %d %s", revoke.Code, revoke.Body.String())
+		t.Fatalf("expected revoke with agent_uuid to succeed, got %d %s", revoke.Code, revoke.Body.String())
 	}
 }
 
-func TestAmbiguousReceiverRequiresCanonicalURI(t *testing.T) {
+func TestPublishRequiresAgentUUIDReceiverRef(t *testing.T) {
 	router := newTestRouter()
 	aliceHumanID := currentHumanID(t, router, "alice", "alice@a.test")
-	bobHumanID := currentHumanID(t, router, "bob", "bob@b.test")
 	orgA := createOrg(t, router, "alice", "alice@a.test", "Org A")
-	orgB := createOrg(t, router, "bob", "bob@b.test", "Org B")
 
-	senderToken, _, _ := registerAgentWithDetails(t, router, "alice", "alice@a.test", orgA, "sender", aliceHumanID)
-	_, _, _ = registerAgentWithDetails(t, router, "alice", "alice@a.test", orgA, "dup", aliceHumanID)
-	_, dupBID, _ := registerAgentWithDetails(t, router, "bob", "bob@b.test", orgB, "dup", bobHumanID)
+	senderToken, _, _, _ := registerAgentWithDetails(t, router, "alice", "alice@a.test", orgA, "sender", aliceHumanID)
 
-	ambiguous := publish(t, router, senderToken, "dup", "hello")
-	if ambiguous.Code != http.StatusConflict {
-		t.Fatalf("expected ambiguous publish to return 409, got %d %s", ambiguous.Code, ambiguous.Body.String())
+	resp := doJSONRequest(t, router, http.MethodPost, "/v1/messages/publish", map[string]string{
+		"to_agent_uuid": "dup",
+		"content_type":  "text/plain",
+		"payload":       "hello",
+	}, map[string]string{"Authorization": "Bearer " + senderToken})
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid receiver uuid to return 400, got %d %s", resp.Code, resp.Body.String())
 	}
-	if decodeJSONMap(t, ambiguous.Body.Bytes())["error"] != "ambiguous_to_agent_id" {
-		t.Fatalf("expected ambiguous_to_agent_id error")
-	}
-
-	canonical := publish(t, router, senderToken, dupBID, "hello")
-	if canonical.Code != http.StatusAccepted {
-		t.Fatalf("expected canonical publish to be accepted, got %d %s", canonical.Code, canonical.Body.String())
-	}
-	if decodeJSONMap(t, canonical.Body.Bytes())["status"] != "dropped" {
-		t.Fatalf("expected dropped status without trust path")
+	if decodeJSONMap(t, resp.Body.Bytes())["error"] != "invalid_to_agent_uuid" {
+		t.Fatalf("expected invalid_to_agent_uuid error")
 	}
 }
 
-func TestAmbiguousAgentTrustRequiresCanonicalURI(t *testing.T) {
+func TestAgentTrustRequiresAgentUUIDRefs(t *testing.T) {
 	router := newTestRouter()
 	aliceHumanID := currentHumanID(t, router, "alice", "alice@a.test")
-	bobHumanID := currentHumanID(t, router, "bob", "bob@b.test")
 	orgA := createOrg(t, router, "alice", "alice@a.test", "Trust Org A")
-	orgB := createOrg(t, router, "bob", "bob@b.test", "Trust Org B")
 
-	_, initiatorID, _ := registerAgentWithDetails(t, router, "alice", "alice@a.test", orgA, "initiator", aliceHumanID)
-	_, _, _ = registerAgentWithDetails(t, router, "alice", "alice@a.test", orgA, "dup", aliceHumanID)
-	_, dupBID, _ := registerAgentWithDetails(t, router, "bob", "bob@b.test", orgB, "dup", bobHumanID)
+	_, initiatorUUID, _, _ := registerAgentWithDetails(t, router, "alice", "alice@a.test", orgA, "initiator", aliceHumanID)
 
-	ambiguous := doJSONRequest(t, router, http.MethodPost, "/v1/agent-trusts", map[string]any{
-		"org_id":        orgA,
-		"agent_id":      initiatorID,
-		"peer_agent_id": "dup",
+	invalid := doJSONRequest(t, router, http.MethodPost, "/v1/agent-trusts", map[string]any{
+		"org_id":          orgA,
+		"agent_uuid":      initiatorUUID,
+		"peer_agent_uuid": "dup",
 	}, humanHeaders("alice", "alice@a.test"))
-	if ambiguous.Code != http.StatusConflict {
-		t.Fatalf("expected ambiguous agent trust to return 409, got %d %s", ambiguous.Code, ambiguous.Body.String())
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid agent trust refs to return 400, got %d %s", invalid.Code, invalid.Body.String())
 	}
-	if decodeJSONMap(t, ambiguous.Body.Bytes())["error"] != "ambiguous_agent_id" {
-		t.Fatalf("expected ambiguous_agent_id error")
-	}
-
-	canonical := doJSONRequest(t, router, http.MethodPost, "/v1/agent-trusts", map[string]any{
-		"org_id":        orgA,
-		"agent_id":      initiatorID,
-		"peer_agent_id": dupBID,
-	}, humanHeaders("alice", "alice@a.test"))
-	if canonical.Code != http.StatusCreated {
-		t.Fatalf("expected canonical agent trust creation to succeed, got %d %s", canonical.Code, canonical.Body.String())
-	}
-
-	payload := decodeJSONMap(t, canonical.Body.Bytes())
-	trust, _ := payload["trust"].(map[string]any)
-	if trust == nil {
-		t.Fatalf("expected trust object in response")
-	}
-	left, _ := trust["left_id"].(string)
-	right, _ := trust["right_id"].(string)
-	if left != initiatorID && right != initiatorID {
-		raw, _ := json.Marshal(trust)
-		t.Fatalf("expected canonical initiator id in trust edge, got %s", string(raw))
+	if decodeJSONMap(t, invalid.Body.Bytes())["error"] != "invalid_agent_uuid" {
+		t.Fatalf("expected invalid_agent_uuid error")
 	}
 }

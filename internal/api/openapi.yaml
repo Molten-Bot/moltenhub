@@ -138,13 +138,13 @@ paths:
           application/json:
             schema:
               type: object
-              required: [agent_id, peer_agent_id]
+              required: [agent_uuid, peer_agent_uuid]
               properties:
                 org_id:
                   type: string
-                agent_id:
+                agent_uuid:
                   type: string
-                peer_agent_id:
+                peer_agent_uuid:
                   type: string
       responses:
         '200':
@@ -541,28 +541,28 @@ paths:
           description: Skill content
         '401':
           description: Unauthorized
-  /v1/agents/{agent_id}/rotate-token:
+  /v1/agents/{agent_uuid}/rotate-token:
     post:
       summary: Rotate token
       security:
         - humanAuth: []
       parameters:
         - in: path
-          name: agent_id
+          name: agent_uuid
           required: true
           schema:
             type: string
       responses:
         '200':
           description: Rotated
-  /v1/agents/{agent_id}:
+  /v1/agents/{agent_uuid}:
     delete:
       summary: Revoke agent
       security:
         - humanAuth: []
       parameters:
         - in: path
-          name: agent_id
+          name: agent_uuid
           required: true
           schema:
             type: string
@@ -644,13 +644,13 @@ paths:
           application/json:
             schema:
               type: object
-              required: [org_id, agent_id, peer_agent_id]
+              required: [org_id, agent_uuid, peer_agent_uuid]
               properties:
                 org_id:
                   type: string
-                agent_id:
+                agent_uuid:
                   type: string
-                peer_agent_id:
+                peer_agent_uuid:
                   type: string
       responses:
         '201':
@@ -710,9 +710,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [to_agent_id, content_type, payload]
+              required: [to_agent_uuid, content_type, payload]
               properties:
-                to_agent_id:
+                to_agent_uuid:
                   type: string
                 content_type:
                   type: string

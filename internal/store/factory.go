@@ -26,6 +26,13 @@ func NewStoresFromEnv() (ControlPlaneStore, MessageQueueStore, error) {
 	case stateBackend == "memory" && queueBackend == "memory":
 		mem := NewMemoryStore()
 		return mem, mem, nil
+	case stateBackend == "memory" && queueBackend == "s3":
+		mem := NewMemoryStore()
+		queue, err := NewS3QueueStoreFromEnv()
+		if err != nil {
+			return nil, nil, err
+		}
+		return mem, queue, nil
 	case stateBackend != "memory":
 		return nil, nil, fmt.Errorf("unsupported state backend %q", stateBackend)
 	default:

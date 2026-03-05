@@ -4,13 +4,13 @@ set -euo pipefail
 usage() {
   cat <<USAGE
 Usage:
-  exchange_roundtrip.sh <base_url> <agent_a_id> <agent_a_token> <agent_b_id> <agent_b_token> <msg_a_to_b> <msg_b_to_a> [pull_timeout_ms]
+  exchange_roundtrip.sh <base_url> <agent_a_uuid> <agent_a_token> <agent_b_uuid> <agent_b_token> <msg_a_to_b> <msg_b_to_a> [pull_timeout_ms]
 
 Arguments:
   base_url        Example: http://localhost:8080
-  agent_a_id      Sender/receiver A
+  agent_a_uuid    Sender/receiver A UUID
   agent_a_token   Bearer token for agent A
-  agent_b_id      Sender/receiver B
+  agent_b_uuid    Sender/receiver B UUID
   agent_b_token   Bearer token for agent B
   msg_a_to_b      Payload expected by B
   msg_b_to_a      Payload expected by A
@@ -31,9 +31,9 @@ for cmd in curl node; do
 done
 
 base_url="${1%/}"
-agent_a_id="$2"
+agent_a_uuid="$2"
 agent_a_token="$3"
-agent_b_id="$4"
+agent_b_uuid="$4"
 agent_b_token="$5"
 msg_a_to_b="$6"
 msg_b_to_a="$7"
@@ -52,17 +52,17 @@ trap 'rm -f "$publish_tmp" "$pull_tmp"' EXIT
 
 publish_message() {
   local sender_token="$1"
-  local to_agent_id="$2"
+  local to_agent_uuid="$2"
   local payload="$3"
 
   local payload_json
   payload_json="$(node -e '
 console.log(JSON.stringify({
-  to_agent_id: process.argv[1],
+  to_agent_uuid: process.argv[1],
   content_type: "text/plain",
   payload: process.argv[2],
 }));
-' "$to_agent_id" "$payload")"
+' "$to_agent_uuid" "$payload")"
 
   local status
   status="$(curl -sS -o "$publish_tmp" -w "%{http_code}" \
@@ -114,8 +114,8 @@ pull_and_verify() {
 const fs = require("fs");
 const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
 const message = payload.message || {};
-if (message.from_agent_id !== process.argv[2]) {
-  console.error(`pull verification failed: expected from_agent_id=${JSON.stringify(process.argv[2])}, got ${JSON.stringify(message.from_agent_id)}`);
+if (message.from_agent_uuid !== process.argv[2]) {
+  console.error(`pull verification failed: expected from_agent_uuid=${JSON.stringify(process.argv[2])}, got ${JSON.stringify(message.from_agent_uuid)}`);
   process.exit(1);
 }
 if (message.payload !== process.argv[3]) {
@@ -126,10 +126,10 @@ console.log(message.message_id || "");
 ' "$pull_tmp" "$expected_from" "$expected_payload"
 }
 
-msg_id_a_to_b="$(publish_message "$agent_a_token" "$agent_b_id" "$msg_a_to_b")"
-pulled_a_to_b="$(pull_and_verify "$agent_b_token" "$agent_a_id" "$msg_a_to_b")"
-msg_id_b_to_a="$(publish_message "$agent_b_token" "$agent_a_id" "$msg_b_to_a")"
-pulled_b_to_a="$(pull_and_verify "$agent_a_token" "$agent_b_id" "$msg_b_to_a")"
+msg_id_a_to_b="$(publish_message "$agent_a_token" "$agent_b_uuid" "$msg_a_to_b")"
+pulled_a_to_b="$(pull_and_verify "$agent_b_token" "$agent_a_uuid" "$msg_a_to_b")"
+msg_id_b_to_a="$(publish_message "$agent_b_token" "$agent_a_uuid" "$msg_b_to_a")"
+pulled_b_to_a="$(pull_and_verify "$agent_a_token" "$agent_b_uuid" "$msg_b_to_a")"
 
 end_ms="$(date +%s%3N)"
 

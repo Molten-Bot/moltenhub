@@ -114,24 +114,28 @@ func applyAPIContractSetup(t *testing.T, router http.Handler, setup string, vars
 	case "alice_handle_confirmed":
 		ensureHandleConfirmed(t, router, "alice", "alice@a.test")
 	case "trusted_agents":
-		orgA, orgB, tokenA, tokenB, orgTrustID, agentTrustID := setupTrustedAgents(t, router)
+		orgA, orgB, tokenA, tokenB, orgTrustID, agentTrustID, agentUUIDA, agentUUIDB := setupTrustedAgents(t, router)
 		vars["ORG_A"] = orgA
 		vars["ORG_B"] = orgB
 		vars["TOKEN_A"] = tokenA
 		vars["TOKEN_B"] = tokenB
 		vars["ORG_TRUST_ID"] = orgTrustID
 		vars["AGENT_TRUST_ID"] = agentTrustID
+		vars["AGENT_UUID_A"] = agentUUIDA
+		vars["AGENT_UUID_B"] = agentUUIDB
 	case "agents_no_trust":
 		aliceHumanID := currentHumanID(t, router, "alice", "alice@a.test")
 		bobHumanID := currentHumanID(t, router, "bob", "bob@b.test")
 		orgA := createOrg(t, router, "alice", "alice@a.test", "No Trust Org A")
 		orgB := createOrg(t, router, "bob", "bob@b.test", "No Trust Org B")
-		tokenA := registerAgent(t, router, "alice", "alice@a.test", orgA, "agent-a", aliceHumanID)
-		tokenB := registerAgent(t, router, "bob", "bob@b.test", orgB, "agent-b", bobHumanID)
+		tokenA, agentUUIDA := registerAgentWithUUID(t, router, "alice", "alice@a.test", orgA, "agent-a", aliceHumanID)
+		tokenB, agentUUIDB := registerAgentWithUUID(t, router, "bob", "bob@b.test", orgB, "agent-b", bobHumanID)
 		vars["ORG_A"] = orgA
 		vars["ORG_B"] = orgB
 		vars["TOKEN_A"] = tokenA
 		vars["TOKEN_B"] = tokenB
+		vars["AGENT_UUID_A"] = agentUUIDA
+		vars["AGENT_UUID_B"] = agentUUIDB
 	default:
 		t.Fatalf("unsupported contract fixture setup %q", setup)
 	}

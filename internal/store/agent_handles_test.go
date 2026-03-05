@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,11 +67,21 @@ func TestMemoryStoreAgentCanonicalURIAndScopedUniqueness(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register human-owned agent failed: %v", err)
 	}
+	if humanOwnedA.AgentUUID == "" {
+		t.Fatalf("expected agent_uuid to be set")
+	}
 	if humanOwnedA.Handle != "alpha" {
 		t.Fatalf("expected normalized handle alpha, got %q", humanOwnedA.Handle)
 	}
 	if humanOwnedA.AgentID != "org-a/alice/alpha" {
 		t.Fatalf("expected canonical agent URI org-a/alice/alpha, got %q", humanOwnedA.AgentID)
+	}
+	uri, err := mem.GetAgentURI(humanOwnedA.AgentUUID)
+	if err != nil {
+		t.Fatalf("GetAgentURI failed: %v", err)
+	}
+	if uri != humanOwnedA.AgentID {
+		t.Fatalf("expected uri %q got %q", humanOwnedA.AgentID, uri)
 	}
 
 	if _, err := mem.RegisterAgent(orgA.OrgID, "alpha", &alice.HumanID, "tok-alpha-a-2", alice.HumanID, now, false); !errors.Is(err, ErrAgentExists) {
@@ -106,66 +117,52 @@ func TestMemoryStoreAgentCanonicalURIAndScopedUniqueness(t *testing.T) {
 	}
 }
 
-func TestMemoryStoreAgentReferenceResolutionAndAmbiguity(t *testing.T) {
+func TestMemoryStoreAgentUUIDLookupAndTokenLifecycle(t *testing.T) {
 	now := time.Date(2026, 3, 5, 0, 0, 0, 0, time.UTC)
 	ids := &seqID{}
 	mem := NewMemoryStore()
 
 	alice := mustCreateHuman(t, mem, ids, "alice", "alice@a.test", "alice", now)
-	bob := mustCreateHuman(t, mem, ids, "bob", "bob@b.test", "bob", now)
 	orgA := mustCreateOrg(t, mem, ids, alice, "org-a", "Org A", now)
-	orgB := mustCreateOrg(t, mem, ids, bob, "org-b", "Org B", now)
-
-	sender, err := mem.RegisterAgent(orgA.OrgID, "sender", &alice.HumanID, "tok-sender", alice.HumanID, now, false)
+	agent, err := mem.RegisterAgent(orgA.OrgID, "sender", &alice.HumanID, "tok-sender", alice.HumanID, now, false)
 	if err != nil {
 		t.Fatalf("register sender failed: %v", err)
 	}
-	dupA, err := mem.RegisterAgent(orgA.OrgID, "dup", nil, "tok-dup-a", alice.HumanID, now, false)
+
+	gotUUID, err := mem.AgentUUIDForTokenHash("tok-sender")
 	if err != nil {
-		t.Fatalf("register dupA failed: %v", err)
+		t.Fatalf("AgentUUIDForTokenHash failed: %v", err)
 	}
-	dupB, err := mem.RegisterAgent(orgB.OrgID, "dup", nil, "tok-dup-b", bob.HumanID, now, false)
+	if gotUUID != agent.AgentUUID {
+		t.Fatalf("expected uuid %q got %q", agent.AgentUUID, gotUUID)
+	}
+
+	gotAgent, err := mem.GetAgentByUUID(agent.AgentUUID)
 	if err != nil {
-		t.Fatalf("register dupB failed: %v", err)
+		t.Fatalf("GetAgentByUUID failed: %v", err)
+	}
+	if gotAgent.AgentID != agent.AgentID {
+		t.Fatalf("expected agent uri %q got %q", agent.AgentID, gotAgent.AgentID)
 	}
 
-	if _, err := mem.GetAgent("dup"); !errors.Is(err, ErrAgentAmbiguous) {
-		t.Fatalf("expected GetAgent by local handle to be ambiguous, got %v", err)
+	if err := mem.RotateAgentToken(agent.AgentUUID, alice.HumanID, "tok-sender-rotated", now, false); err != nil {
+		t.Fatalf("RotateAgentToken failed: %v", err)
+	}
+	if _, err := mem.AgentUUIDForTokenHash("tok-sender"); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("expected old token invalid after rotation, got %v", err)
+	}
+	if uuid, err := mem.AgentUUIDForTokenHash("tok-sender-rotated"); err != nil || uuid != agent.AgentUUID {
+		t.Fatalf("expected rotated token to resolve same uuid, got uuid=%q err=%v", uuid, err)
 	}
 
-	gotDupA, err := mem.GetAgent(dupA.AgentID)
-	if err != nil {
-		t.Fatalf("expected GetAgent by canonical URI to succeed, got %v", err)
+	if err := mem.RevokeAgent(agent.AgentUUID, alice.HumanID, now, false); err != nil {
+		t.Fatalf("RevokeAgent failed: %v", err)
 	}
-	if gotDupA.AgentID != dupA.AgentID {
-		t.Fatalf("unexpected resolved agent, got %q want %q", gotDupA.AgentID, dupA.AgentID)
+	if _, err := mem.AgentUUIDForTokenHash("tok-sender-rotated"); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("expected revoked token invalid, got %v", err)
 	}
-
-	if _, err := mem.SetAgentVisibility("dup", false, alice.HumanID, now, false); !errors.Is(err, ErrAgentAmbiguous) {
-		t.Fatalf("expected SetAgentVisibility by ambiguous local handle to fail with ErrAgentAmbiguous, got %v", err)
-	}
-
-	if _, _, err := mem.CanPublish(sender.AgentID, "dup"); !errors.Is(err, ErrAgentAmbiguous) {
-		t.Fatalf("expected CanPublish with ambiguous receiver to fail with ErrAgentAmbiguous, got %v", err)
-	}
-
-	if err := mem.RevokeAgent(dupB.AgentID, bob.HumanID, now, false); err != nil {
-		t.Fatalf("revoke dupB failed: %v", err)
-	}
-
-	resolvedAfterRevoke, err := mem.GetAgent("dup")
-	if err != nil {
-		t.Fatalf("expected GetAgent(dup) to resolve after one duplicate revoked, got %v", err)
-	}
-	if resolvedAfterRevoke.AgentID != dupA.AgentID {
-		t.Fatalf("unexpected resolved agent after revoke, got %q want %q", resolvedAfterRevoke.AgentID, dupA.AgentID)
-	}
-
-	if err := mem.RevokeAgent(dupA.AgentID, alice.HumanID, now, false); err != nil {
-		t.Fatalf("revoke dupA failed: %v", err)
-	}
-	if _, err := mem.GetAgent("dup"); !errors.Is(err, ErrAgentNotFound) {
-		t.Fatalf("expected GetAgent(dup) to be not found after all dups revoked, got %v", err)
+	if _, err := mem.GetAgentByUUID(agent.AgentUUID); !errors.Is(err, ErrAgentNotFound) {
+		t.Fatalf("expected revoked agent not found, got %v", err)
 	}
 }
 
@@ -208,5 +205,23 @@ func TestMemoryStoreHandleValidationAcrossEntities(t *testing.T) {
 
 	if _, err := mem.RedeemBindToken("bind-hash-1", "x", "tok-redeem-short", now); !errors.Is(err, ErrInvalidHandle) {
 		t.Fatalf("expected short redeem agent handle to fail with ErrInvalidHandle, got %v", err)
+	}
+}
+
+func TestMemoryStoreGeneratedAgentUUIDLooksUUIDLike(t *testing.T) {
+	now := time.Date(2026, 3, 5, 0, 0, 0, 0, time.UTC)
+	ids := &seqID{}
+	mem := NewMemoryStore()
+
+	alice := mustCreateHuman(t, mem, ids, "alice", "alice@a.test", "alice", now)
+	org := mustCreateOrg(t, mem, ids, alice, "org-a", "Org A", now)
+	agent, err := mem.RegisterAgent(org.OrgID, "agent-a", &alice.HumanID, "tok-a", alice.HumanID, now, false)
+	if err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	parts := strings.Split(agent.AgentUUID, "-")
+	if len(parts) != 5 {
+		t.Fatalf("expected uuid-like shape, got %q", agent.AgentUUID)
 	}
 }

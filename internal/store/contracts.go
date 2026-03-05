@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"time"
 
 	"statocyst/internal/model"
@@ -35,18 +36,19 @@ type ControlPlaneStore interface {
 	RegisterAgent(orgID, agentID string, ownerHumanID *string, tokenHash, actorHumanID string, now time.Time, isSuperAdmin bool) (model.Agent, error)
 	CreateBindToken(orgID string, ownerHumanID *string, actorHumanID, bindID, bindTokenHash string, expiresAt, now time.Time, isSuperAdmin bool) (model.BindToken, error)
 	RedeemBindToken(bindTokenHash, agentID, agentTokenHash string, now time.Time) (model.Agent, error)
-	RotateAgentToken(agentID, actorHumanID, tokenHash string, now time.Time, isSuperAdmin bool) error
-	RevokeAgent(agentID, actorHumanID string, now time.Time, isSuperAdmin bool) error
+	RotateAgentToken(agentUUID, actorHumanID, tokenHash string, now time.Time, isSuperAdmin bool) error
+	RevokeAgent(agentUUID, actorHumanID string, now time.Time, isSuperAdmin bool) error
 	SetOrgVisibility(orgID string, isPublic bool, actorHumanID string, isSuperAdmin bool, now time.Time) (model.Organization, error)
-	SetAgentVisibility(agentID string, isPublic bool, actorHumanID string, now time.Time, isSuperAdmin bool) (model.Agent, error)
-	AgentIDForTokenHash(tokenHash string) (string, error)
+	SetAgentVisibility(agentUUID string, isPublic bool, actorHumanID string, now time.Time, isSuperAdmin bool) (model.Agent, error)
+	AgentUUIDForTokenHash(tokenHash string) (string, error)
 	GetHuman(humanID string) (model.Human, error)
-	GetAgent(agentID string) (model.Agent, error)
+	GetAgentByUUID(agentUUID string) (model.Agent, error)
+	GetAgentURI(agentUUID string) (string, error)
 	CountActiveHumanOwnedAgents(humanID string) int
 	PeekBindToken(bindTokenHash string) (model.BindToken, error)
-	ListTalkablePeers(agentID string) ([]string, error)
+	ListTalkablePeers(agentUUID string) ([]string, error)
 	CreateOrJoinOrgTrust(orgID, peerOrgID, actorHumanID, edgeID string, now time.Time, isSuperAdmin bool) (model.TrustEdge, bool, error)
-	CreateOrJoinAgentTrust(orgID, agentID, peerAgentID, actorHumanID, edgeID string, now time.Time, isSuperAdmin bool) (model.TrustEdge, bool, error)
+	CreateOrJoinAgentTrust(orgID, agentUUID, peerAgentUUID, actorHumanID, edgeID string, now time.Time, isSuperAdmin bool) (model.TrustEdge, bool, error)
 	ApproveOrgTrust(edgeID, actorHumanID string, now time.Time, isSuperAdmin bool) (model.TrustEdge, error)
 	BlockOrgTrust(edgeID, actorHumanID string, now time.Time, isSuperAdmin bool) (model.TrustEdge, error)
 	RevokeOrgTrust(edgeID, actorHumanID string, now time.Time, isSuperAdmin bool) (model.TrustEdge, error)
@@ -60,13 +62,13 @@ type ControlPlaneStore interface {
 	ListAudit(orgID, requesterHumanID string, isSuperAdmin bool) ([]model.AuditEvent, error)
 	GetOrgStats(orgID, requesterHumanID string, isSuperAdmin bool) (model.OrgStats, error)
 	AdminSnapshot() model.AdminSnapshot
-	CanPublish(senderAgentID, receiverAgentID string) (string, string, error)
+	CanPublish(senderAgentUUID, receiverAgentUUID string) (string, string, error)
 	RecordMessageQueued(orgID string)
 	RecordMessageDropped(orgID string)
 }
 
 // MessageQueueStore captures enqueue/dequeue behavior for agent messages.
 type MessageQueueStore interface {
-	Enqueue(message model.Message) error
-	PopNext(agentID string) (model.Message, bool)
+	Enqueue(ctx context.Context, message model.Message) error
+	Dequeue(ctx context.Context, agentUUID string) (model.Message, bool, error)
 }

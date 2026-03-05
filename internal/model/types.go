@@ -63,7 +63,8 @@ type Invite struct {
 }
 
 type Agent struct {
-	AgentID      string     `json:"agent_id"` // canonical URI: org/agent or org/human/agent
+	AgentUUID    string     `json:"agent_uuid"`
+	AgentID      string     `json:"agent_id"` // URI metadata: org/agent or org/human/agent
 	Handle       string     `json:"handle"`
 	OrgID        string     `json:"org_id"`
 	OwnerHumanID *string    `json:"owner_human_id,omitempty"`
@@ -101,8 +102,10 @@ type TrustEdge struct {
 
 type Message struct {
 	MessageID     string    `json:"message_id"`
-	FromAgentID   string    `json:"from_agent_id"`
-	ToAgentID     string    `json:"to_agent_id"`
+	FromAgentUUID string    `json:"from_agent_uuid"`
+	ToAgentUUID   string    `json:"to_agent_uuid"`
+	FromAgentID   string    `json:"from_agent_id,omitempty"`
+	ToAgentID     string    `json:"to_agent_id,omitempty"`
 	SenderOrgID   string    `json:"sender_org_id"`
 	ReceiverOrgID string    `json:"receiver_org_id"`
 	ContentType   string    `json:"content_type"`

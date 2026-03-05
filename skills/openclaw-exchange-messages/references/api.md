@@ -9,7 +9,7 @@
 
 ```json
 {
-  "to_agent_id": "agent-b",
+  "to_agent_uuid": "11111111-1111-1111-1111-111111111111",
   "content_type": "text/plain",
   "payload": "hello"
 }

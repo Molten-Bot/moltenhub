@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +21,8 @@ const (
 	maxPullTimeoutMS     = 30000
 	defaultPullTimeoutMS = 5000
 )
+
+var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 type Handler struct {
 	control           store.ControlPlaneStore
@@ -154,6 +157,14 @@ func validateHandle(handle string) bool {
 	return handles.ValidateHandle(handle) == nil
 }
 
+func normalizeUUID(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+func validateUUID(raw string) bool {
+	return uuidPattern.MatchString(raw)
+}
+
 func normalizeHandle(raw string) string {
 	return handles.Normalize(raw)
 }
@@ -198,7 +209,7 @@ func (h *Handler) authenticateAgent(r *http.Request) (string, error) {
 		return "", err
 	}
 	tokenHash := auth.HashToken(token)
-	return h.control.AgentIDForTokenHash(tokenHash)
+	return h.control.AgentUUIDForTokenHash(tokenHash)
 }
 
 func splitPath(path string) []string {

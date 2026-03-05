@@ -163,7 +163,7 @@ func acceptInvite(t *testing.T, router http.Handler, humanID, email, inviteID st
 	}
 }
 
-func registerAgent(t *testing.T, router http.Handler, humanID, email, orgID, agentID, ownerHumanID string) string {
+func registerAgentWithUUID(t *testing.T, router http.Handler, humanID, email, orgID, agentID, ownerHumanID string) (string, string) {
 	t.Helper()
 	ensureHandleConfirmed(t, router, humanID, email)
 	body := map[string]any{
@@ -182,13 +182,20 @@ func registerAgent(t *testing.T, router http.Handler, humanID, email, orgID, age
 		t.Fatalf("decode register agent: %v", err)
 	}
 	token, _ := payload["token"].(string)
-	if token == "" {
-		t.Fatalf("missing token")
+	agentUUID, _ := payload["agent_uuid"].(string)
+	if token == "" || agentUUID == "" {
+		t.Fatalf("missing token or agent_uuid")
 	}
+	return token, agentUUID
+}
+
+func registerAgent(t *testing.T, router http.Handler, humanID, email, orgID, agentID, ownerHumanID string) string {
+	t.Helper()
+	token, _ := registerAgentWithUUID(t, router, humanID, email, orgID, agentID, ownerHumanID)
 	return token
 }
 
-func registerMyAgent(t *testing.T, router http.Handler, humanID, email, agentID string) (string, string) {
+func registerMyAgent(t *testing.T, router http.Handler, humanID, email, agentID string) (string, string, string) {
 	t.Helper()
 	ensureHandleConfirmed(t, router, humanID, email)
 	resp := doJSONRequest(t, router, http.MethodPost, "/v1/me/agents", map[string]any{
@@ -203,10 +210,11 @@ func registerMyAgent(t *testing.T, router http.Handler, humanID, email, agentID 
 	}
 	token, _ := payload["token"].(string)
 	orgID, _ := payload["org_id"].(string)
-	if token == "" || orgID == "" {
-		t.Fatalf("missing token or org_id")
+	agentUUID, _ := payload["agent_uuid"].(string)
+	if token == "" || orgID == "" || agentUUID == "" {
+		t.Fatalf("missing token or org_id or agent_uuid")
 	}
-	return token, orgID
+	return token, orgID, agentUUID
 }
 
 func createOrgAccessKey(t *testing.T, router http.Handler, humanID, email, orgID, label string, scopes []string) (string, string) {
@@ -233,12 +241,12 @@ func createOrgAccessKey(t *testing.T, router http.Handler, humanID, email, orgID
 	return keyID, secret
 }
 
-func publish(t *testing.T, router http.Handler, senderToken, toAgentID, payload string) *httptest.ResponseRecorder {
+func publish(t *testing.T, router http.Handler, senderToken, toAgentUUID, payload string) *httptest.ResponseRecorder {
 	t.Helper()
 	return doJSONRequest(t, router, http.MethodPost, "/v1/messages/publish", map[string]string{
-		"to_agent_id":  toAgentID,
-		"content_type": "text/plain",
-		"payload":      payload,
+		"to_agent_uuid": toAgentUUID,
+		"content_type":  "text/plain",
+		"payload":       payload,
 	}, map[string]string{"Authorization": "Bearer " + senderToken})
 }
 
@@ -260,15 +268,15 @@ func decodeJSONMap(t *testing.T, body []byte) map[string]any {
 	return m
 }
 
-func setupTrustedAgents(t *testing.T, router http.Handler) (string, string, string, string, string, string) {
+func setupTrustedAgents(t *testing.T, router http.Handler) (string, string, string, string, string, string, string, string) {
 	t.Helper()
 	aliceHumanID := currentHumanID(t, router, "alice", "alice@a.test")
 	bobHumanID := currentHumanID(t, router, "bob", "bob@b.test")
 	orgA := createOrg(t, router, "alice", "alice@a.test", "Org A")
 	orgB := createOrg(t, router, "bob", "bob@b.test", "Org B")
 
-	tokenA := registerAgent(t, router, "alice", "alice@a.test", orgA, "agent-a", aliceHumanID)
-	tokenB := registerAgent(t, router, "bob", "bob@b.test", orgB, "agent-b", bobHumanID)
+	tokenA, agentUUIDA := registerAgentWithUUID(t, router, "alice", "alice@a.test", orgA, "agent-a", aliceHumanID)
+	tokenB, agentUUIDB := registerAgentWithUUID(t, router, "bob", "bob@b.test", orgB, "agent-b", bobHumanID)
 
 	orgTrustResp := doJSONRequest(t, router, http.MethodPost, "/v1/org-trusts", map[string]string{
 		"org_id":      orgA,
@@ -286,9 +294,9 @@ func setupTrustedAgents(t *testing.T, router http.Handler) (string, string, stri
 	}
 
 	agentTrustResp := doJSONRequest(t, router, http.MethodPost, "/v1/agent-trusts", map[string]string{
-		"org_id":        orgA,
-		"agent_id":      "agent-a",
-		"peer_agent_id": "agent-b",
+		"org_id":          orgA,
+		"agent_uuid":      agentUUIDA,
+		"peer_agent_uuid": agentUUIDB,
 	}, humanHeaders("alice", "alice@a.test"))
 	if agentTrustResp.Code != http.StatusCreated {
 		t.Fatalf("agent trust create failed: %d %s", agentTrustResp.Code, agentTrustResp.Body.String())
@@ -301,7 +309,7 @@ func setupTrustedAgents(t *testing.T, router http.Handler) (string, string, stri
 		t.Fatalf("agent trust approve failed: %d %s", agentApprove.Code, agentApprove.Body.String())
 	}
 
-	return orgA, orgB, tokenA, tokenB, orgTrustID, agentTrustID
+	return orgA, orgB, tokenA, tokenB, orgTrustID, agentTrustID, agentUUIDA, agentUUIDB
 }
 
 func TestInviteAcceptFlow(t *testing.T) {
@@ -489,8 +497,8 @@ func TestAgentRegisterHumanAndOrgOwned(t *testing.T) {
 
 func TestMyAgentsAndImmediateSelfBond(t *testing.T) {
 	router := newTestRouter()
-	tokenA, orgA := registerMyAgent(t, router, "alice", "alice@a.test", "alice-agent-a")
-	_, orgB := registerMyAgent(t, router, "alice", "alice@a.test", "alice-agent-b")
+	tokenA, orgA, agentUUIDA := registerMyAgent(t, router, "alice", "alice@a.test", "alice-agent-a")
+	_, orgB, agentUUIDB := registerMyAgent(t, router, "alice", "alice@a.test", "alice-agent-b")
 	if orgA != orgB {
 		t.Fatalf("expected personal org reuse, got %q and %q", orgA, orgB)
 	}
@@ -506,8 +514,8 @@ func TestMyAgentsAndImmediateSelfBond(t *testing.T) {
 	}
 
 	bondResp := doJSONRequest(t, router, http.MethodPost, "/v1/me/agent-trusts", map[string]any{
-		"agent_id":      "alice-agent-a",
-		"peer_agent_id": "alice-agent-b",
+		"agent_uuid":      agentUUIDA,
+		"peer_agent_uuid": agentUUIDB,
 	}, humanHeaders("alice", "alice@a.test"))
 	if bondResp.Code != http.StatusCreated {
 		t.Fatalf("create self bond failed: %d %s", bondResp.Code, bondResp.Body.String())
@@ -534,7 +542,7 @@ func TestMyAgentsAndImmediateSelfBond(t *testing.T) {
 		t.Fatalf("expected non-empty agent_trusts list, got %v", graphPayload["agent_trusts"])
 	}
 
-	pubResp := publish(t, router, tokenA, "alice-agent-b", "hello-self-bond")
+	pubResp := publish(t, router, tokenA, agentUUIDB, "hello-self-bond")
 	if pubResp.Code != http.StatusAccepted {
 		t.Fatalf("publish should be accepted after self-bond: %d %s", pubResp.Code, pubResp.Body.String())
 	}
@@ -594,9 +602,9 @@ func TestMyAgentBindTokenRedeemWithAgentChosenName(t *testing.T) {
 
 func TestTrustLifecycleAndBlockPrecedence(t *testing.T) {
 	router := newTestRouter()
-	_, _, tokenA, _, orgTrustID, _ := setupTrustedAgents(t, router)
+	_, _, tokenA, _, orgTrustID, _, _, agentUUIDB := setupTrustedAgents(t, router)
 
-	resp := publish(t, router, tokenA, "agent-b", "hello-before-block")
+	resp := publish(t, router, tokenA, agentUUIDB, "hello-before-block")
 	if resp.Code != http.StatusAccepted {
 		t.Fatalf("publish should be accepted queued before block: %d %s", resp.Code, resp.Body.String())
 	}
@@ -610,7 +618,7 @@ func TestTrustLifecycleAndBlockPrecedence(t *testing.T) {
 		t.Fatalf("block failed: %d %s", block.Code, block.Body.String())
 	}
 
-	resp = publish(t, router, tokenA, "agent-b", "hello-after-block")
+	resp = publish(t, router, tokenA, agentUUIDB, "hello-after-block")
 	after := decodeJSONMap(t, resp.Body.Bytes())
 	if after["status"] != "dropped" {
 		t.Fatalf("expected dropped after block, got %v", after["status"])
@@ -623,10 +631,10 @@ func TestPublishDropAndQueuedPaths(t *testing.T) {
 	bobHumanID := currentHumanID(t, router, "bob", "bob@b.test")
 	orgA := createOrg(t, router, "alice", "alice@a.test", "Org A")
 	orgB := createOrg(t, router, "bob", "bob@b.test", "Org B")
-	tokenA := registerAgent(t, router, "alice", "alice@a.test", orgA, "agent-a", aliceHumanID)
-	tokenB := registerAgent(t, router, "bob", "bob@b.test", orgB, "agent-b", bobHumanID)
+	tokenA, agentUUIDA := registerAgentWithUUID(t, router, "alice", "alice@a.test", orgA, "agent-a", aliceHumanID)
+	tokenB, agentUUIDB := registerAgentWithUUID(t, router, "bob", "bob@b.test", orgB, "agent-b", bobHumanID)
 
-	resp := publish(t, router, tokenA, "agent-b", "no-trust")
+	resp := publish(t, router, tokenA, agentUUIDB, "no-trust")
 	if resp.Code != http.StatusAccepted {
 		t.Fatalf("publish without trust should still be 202: %d", resp.Code)
 	}
@@ -644,15 +652,15 @@ func TestPublishDropAndQueuedPaths(t *testing.T) {
 	doJSONRequest(t, router, http.MethodPost, "/v1/org-trusts/"+orgTrustID+"/approve", nil, humanHeaders("bob", "bob@b.test"))
 
 	agentTrustResp := doJSONRequest(t, router, http.MethodPost, "/v1/agent-trusts", map[string]string{
-		"org_id":        orgA,
-		"agent_id":      "agent-a",
-		"peer_agent_id": "agent-b",
+		"org_id":          orgA,
+		"agent_uuid":      agentUUIDA,
+		"peer_agent_uuid": agentUUIDB,
 	}, humanHeaders("alice", "alice@a.test"))
 	agentTrust := decodeJSONMap(t, agentTrustResp.Body.Bytes())
 	agentTrustID := agentTrust["trust"].(map[string]any)["edge_id"].(string)
 	doJSONRequest(t, router, http.MethodPost, "/v1/agent-trusts/"+agentTrustID+"/approve", nil, humanHeaders("bob", "bob@b.test"))
 
-	resp = publish(t, router, tokenA, "agent-b", "has-trust")
+	resp = publish(t, router, tokenA, agentUUIDB, "has-trust")
 	withTrust := decodeJSONMap(t, resp.Body.Bytes())
 	if withTrust["status"] != "queued" {
 		t.Fatalf("expected queued, got %v", withTrust["status"])
@@ -681,7 +689,7 @@ func TestLongPollTimeout(t *testing.T) {
 
 func TestConcurrentPublishPull(t *testing.T) {
 	router := newTestRouter()
-	_, _, tokenA, tokenB, _, _ := setupTrustedAgents(t, router)
+	_, _, tokenA, tokenB, _, _, _, agentUUIDB := setupTrustedAgents(t, router)
 	const total = 30
 
 	var wg sync.WaitGroup
@@ -689,7 +697,7 @@ func TestConcurrentPublishPull(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			resp := publish(t, router, tokenA, "agent-b", fmt.Sprintf("msg-%d", i))
+			resp := publish(t, router, tokenA, agentUUIDB, fmt.Sprintf("msg-%d", i))
 			if resp.Code != http.StatusAccepted {
 				t.Errorf("publish status=%d body=%s", resp.Code, resp.Body.String())
 			}
@@ -923,7 +931,7 @@ func TestLiveShowsOnlyPublicEntities(t *testing.T) {
 
 	aliceHumanID := currentHumanID(t, router, "alice", "alice@a.test")
 	orgID := createOrg(t, router, "alice", "alice@a.test", "Live Org")
-	registerAgent(t, router, "alice", "alice@a.test", orgID, "live-agent", aliceHumanID)
+	_, liveAgentUUID := registerAgentWithUUID(t, router, "alice", "alice@a.test", orgID, "live-agent", aliceHumanID)
 
 	live := doJSONRequest(t, router, http.MethodGet, "/live", nil, nil)
 	if live.Code != http.StatusOK {
@@ -940,7 +948,7 @@ func TestLiveShowsOnlyPublicEntities(t *testing.T) {
 		t.Fatalf("expected live page to include agent handle, got %q", liveBody)
 	}
 
-	hideAgent := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/live-agent", map[string]any{
+	hideAgent := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/"+liveAgentUUID, map[string]any{
 		"is_public": false,
 	}, humanHeaders("alice", "alice@a.test"))
 	if hideAgent.Code != http.StatusOK {
@@ -1011,7 +1019,7 @@ func TestBindTokenExpires(t *testing.T) {
 
 func TestAgentCapabilitiesAndSkillEndpoints(t *testing.T) {
 	router := newTestRouter()
-	_, _, tokenA, _, _, _ := setupTrustedAgents(t, router)
+	_, _, tokenA, _, _, _, _, _ := setupTrustedAgents(t, router)
 
 	capsResp := doJSONRequest(t, router, http.MethodGet, "/v1/agents/me/capabilities", nil, map[string]string{
 		"Authorization": "Bearer " + tokenA,
@@ -1080,10 +1088,10 @@ func TestOpenAPIYAMLHeaders(t *testing.T) {
 
 func TestAdminSnapshotDoesNotLeakMessagePayloads(t *testing.T) {
 	router := newTestRouter()
-	_, _, tokenA, _, _, _ := setupTrustedAgents(t, router)
+	_, _, tokenA, _, _, _, _, agentUUIDB := setupTrustedAgents(t, router)
 	secretPayload := "top-secret-payload-should-not-appear"
 
-	pub := publish(t, router, tokenA, "agent-b", secretPayload)
+	pub := publish(t, router, tokenA, agentUUIDB, secretPayload)
 	if pub.Code != http.StatusAccepted {
 		t.Fatalf("publish failed: %d %s", pub.Code, pub.Body.String())
 	}
@@ -1209,8 +1217,8 @@ func TestAgentLimitAndSuperAdminBypass(t *testing.T) {
 	ensureHandleConfirmed(t, router, "alice", "alice@a.test")
 	ensureHandleConfirmed(t, router, "root", "root@molten.bot")
 
-	_, _ = registerMyAgent(t, router, "alice", "alice@a.test", "alice-agent-1")
-	_, _ = registerMyAgent(t, router, "alice", "alice@a.test", "alice-agent-2")
+	_, _, _ = registerMyAgent(t, router, "alice", "alice@a.test", "alice-agent-1")
+	_, _, _ = registerMyAgent(t, router, "alice", "alice@a.test", "alice-agent-2")
 	third := doJSONRequest(t, router, http.MethodPost, "/v1/me/agents", map[string]any{
 		"agent_id": "alice-agent-3",
 	}, humanHeaders("alice", "alice@a.test"))
