@@ -17,14 +17,6 @@ paths:
       responses:
         '200':
           description: OK
-  /healthz:
-    get:
-      summary: Health check alias (legacy)
-      description: Alias of `/health` kept for backward compatibility with existing probes.
-      deprecated: true
-      responses:
-        '200':
-          description: OK
   /openapi.yaml:
     get:
       summary: OpenAPI document

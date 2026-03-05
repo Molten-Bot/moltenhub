@@ -9,17 +9,34 @@ import (
 func registerAgentWithDetails(t *testing.T, router http.Handler, humanID, email, orgID, agentID, ownerHumanID string) (string, string, string, string) {
 	t.Helper()
 	ensureHandleConfirmed(t, router, humanID, email)
+	if ownerHumanID == "" {
+		token, _ := bindAgentWithUUID(t, router, humanID, email, orgID, agentID)
+		capsResp := doJSONRequest(t, router, http.MethodGet, "/v1/agents/me/capabilities", nil, map[string]string{
+			"Authorization": "Bearer " + token,
+		})
+		if capsResp.Code != http.StatusOK {
+			t.Fatalf("agent capabilities failed: %d %s", capsResp.Code, capsResp.Body.String())
+		}
+		capsPayload := decodeJSONMap(t, capsResp.Body.Bytes())
+		agentObj, _ := capsPayload["agent"].(map[string]any)
+		agentUUID, _ := agentObj["agent_uuid"].(string)
+		canonicalID, _ := agentObj["agent_id"].(string)
+		handle := canonicalID
+		if idx := strings.LastIndex(canonicalID, "/"); idx >= 0 && idx < len(canonicalID)-1 {
+			handle = canonicalID[idx+1:]
+		}
+		if token == "" || agentUUID == "" || canonicalID == "" || handle == "" {
+			t.Fatalf("missing token/agent_uuid/agent_id/handle: %v", capsPayload)
+		}
+		return token, agentUUID, canonicalID, handle
+	}
 
-	body := map[string]any{
+	resp := doJSONRequest(t, router, http.MethodPost, "/v1/me/agents", map[string]any{
 		"org_id":   orgID,
 		"agent_id": agentID,
-	}
-	if ownerHumanID != "" {
-		body["owner_human_id"] = ownerHumanID
-	}
-	resp := doJSONRequest(t, router, http.MethodPost, "/v1/agents/register", body, humanHeaders(humanID, email))
+	}, humanHeaders(humanID, email))
 	if resp.Code != http.StatusCreated {
-		t.Fatalf("register agent failed: %d %s", resp.Code, resp.Body.String())
+		t.Fatalf("register my agent failed: %d %s", resp.Code, resp.Body.String())
 	}
 	payload := decodeJSONMap(t, resp.Body.Bytes())
 	token, _ := payload["token"].(string)
@@ -76,19 +93,17 @@ func TestHandleContractValidationRejectsShortAndBlocked(t *testing.T) {
 
 	orgID := createOrg(t, router, "alice", "alice@a.test", "Valid Org")
 
-	shortAgent := doJSONRequest(t, router, http.MethodPost, "/v1/agents/register", map[string]any{
-		"org_id":         orgID,
-		"owner_human_id": aliceHumanID,
-		"agent_id":       "a",
+	shortAgent := doJSONRequest(t, router, http.MethodPost, "/v1/me/agents", map[string]any{
+		"org_id":   orgID,
+		"agent_id": "a",
 	}, humanHeaders("alice", "alice@a.test"))
 	if shortAgent.Code != http.StatusBadRequest {
 		t.Fatalf("expected short agent handle to fail with 400, got %d %s", shortAgent.Code, shortAgent.Body.String())
 	}
 
-	blockedAgent := doJSONRequest(t, router, http.MethodPost, "/v1/agents/register", map[string]any{
-		"org_id":         orgID,
-		"owner_human_id": aliceHumanID,
-		"agent_id":       "f.u.c.k",
+	blockedAgent := doJSONRequest(t, router, http.MethodPost, "/v1/me/agents", map[string]any{
+		"org_id":   orgID,
+		"agent_id": "f.u.c.k",
 	}, humanHeaders("alice", "alice@a.test"))
 	if blockedAgent.Code != http.StatusBadRequest {
 		t.Fatalf("expected blocked agent handle to fail with 400, got %d %s", blockedAgent.Code, blockedAgent.Body.String())
