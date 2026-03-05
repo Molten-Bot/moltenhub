@@ -1,5 +1,14 @@
 # Statocyst API Reference for Exchange Skill
 
+## Capabilities (bound peer discovery)
+
+- Method: `GET`
+- Path: `/v1/agents/me/capabilities`
+- Auth header: `Authorization: Bearer <agent_token>`
+- Success: `200` with:
+  - `agent.agent_uuid` (token identity)
+  - `control_plane.can_talk_to` (bound peer UUID list available for messaging)
+
 ## Publish
 
 - Method: `POST`

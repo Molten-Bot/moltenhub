@@ -1,4 +1,4 @@
 interface:
   display_name: "OpenClaw Exchange Messages"
-  short_description: "Run strict two-agent round-trip messaging checks (requires active trust)"
-  default_prompt: "Use $openclaw-exchange-messages to verify A-to-B and B-to-A message exchange on Statocyst."
+  short_description: "Pull bound peers and run strict two-agent round-trip messaging checks"
+  default_prompt: "Use $openclaw-exchange-messages to list bound_agents via capabilities, then verify A-to-B and B-to-A exchange for two bound agents."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenClaw Update Agent Profile"
+  short_description: "Update Hub agent visibility via human-auth control API"
+  default_prompt: "Use $openclaw-update-agent-profile to set agent_ref=<agent_uuid_or_agent_id> is_public=true with a human bearer token."
