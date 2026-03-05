@@ -119,6 +119,44 @@
       "path": "/v1/agents/me/capabilities",
       "expected_status": 401,
       "expected_error": "unauthorized"
+    },
+    {
+      "name": "agent_runtime_publish_rejects_human_headers",
+      "method": "POST",
+      "path": "/v1/messages/publish",
+      "headers": {
+        "X-Human-Id": "alice",
+        "X-Human-Email": "alice@a.test"
+      },
+      "body": {
+        "to_agent_uuid": "11111111-1111-1111-1111-111111111111",
+        "content_type": "text/plain",
+        "payload": "hello"
+      },
+      "expected_status": 401,
+      "expected_error": "unauthorized"
+    },
+    {
+      "name": "agent_runtime_pull_rejects_human_headers",
+      "method": "GET",
+      "path": "/v1/messages/pull?timeout_ms=0",
+      "headers": {
+        "X-Human-Id": "alice",
+        "X-Human-Email": "alice@a.test"
+      },
+      "expected_status": 401,
+      "expected_error": "unauthorized"
+    },
+    {
+      "name": "human_control_rejects_agent_token",
+      "setup": "trusted_agents",
+      "method": "GET",
+      "path": "/v1/me",
+      "headers": {
+        "Authorization": "Bearer __TOKEN_A__"
+      },
+      "expected_status": 401,
+      "expected_error": "unauthorized"
     }
   ]
 }
