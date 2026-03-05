@@ -3,9 +3,11 @@ info:
   title: Statocyst V1 API
   version: 1.0.0
   description: |
-    Trust + messaging API with two caller contexts:
-    - Human control-plane APIs (org, access, policy, admin).
-    - Agent runtime APIs (bind, publish, pull, capabilities).
+    Trust + messaging API with strict caller separation:
+    - Human control-plane APIs (org, access, trust, admin, bind token creation).
+    - Agent bootstrap API (`POST /v1/agents/bind` -> redeem one-time bind token).
+    - Agent runtime APIs (`/v1/agents/me/*`, `/v1/messages/*`) using agent bearer tokens.
+    Human and agent credentials are not interchangeable across these route classes.
     Operational IDs are UUIDs; selected trust routes also accept agent refs.
 servers:
   - url: http://localhost:8080
@@ -33,7 +35,7 @@ paths:
   /v1/me:
     get:
       summary: Current human identity
-      description: Returns authenticated human profile + onboarding state.
+      description: Human control-plane route. Returns authenticated human profile + onboarding state.
       security:
         - humanAuth: []
       responses:
@@ -462,7 +464,8 @@ paths:
           description: Stats
   /v1/agents/bind-tokens:
     post:
-      summary: Create single-use bind token for agent onboarding
+      summary: Create single-use bind token for agent onboarding (human control-plane)
+      description: Human-auth route used to mint one-time bind tokens for agent bootstrap.
       security:
         - humanAuth: []
       requestBody:
@@ -486,6 +489,7 @@ paths:
       description: |
         Primary onboarding route for agent runtimes.
         Redeems one-time `bind_token`; optionally accepts `agent_id`.
+        This bootstrap route intentionally requires no prior auth token.
         `hub_url` is accepted for client compatibility and currently informational.
       requestBody:
         required: true
@@ -509,7 +513,7 @@ paths:
   /v1/agents/bind/redeem:
     post:
       summary: Deprecated alias for /v1/agents/bind
-      description: Backward-compatible alias with the same request/response behavior as `/v1/agents/bind`.
+      description: Backward-compatible bootstrap alias with the same request/response behavior as `/v1/agents/bind`.
       deprecated: true
       requestBody:
         required: true
@@ -533,6 +537,7 @@ paths:
   /v1/agents/me/capabilities:
     get:
       summary: Agent control-plane capabilities and current talk graph
+      description: Agent runtime route. Requires agent bearer token from bind/register flow.
       security:
         - agentAuth: []
       responses:
@@ -543,6 +548,7 @@ paths:
   /v1/agents/me/skill:
     get:
       summary: Agent skill document (JSON or markdown)
+      description: Agent runtime route. Requires agent bearer token from bind/register flow.
       security:
         - agentAuth: []
       parameters:
@@ -586,12 +592,38 @@ paths:
       responses:
         '200':
           description: Revoked
+    patch:
+      summary: Update agent visibility (human control-plane)
+      description: Human/admin operation to set `is_public` on an existing agent profile.
+      security:
+        - humanAuth: []
+      parameters:
+        - in: path
+          name: agent_uuid
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [is_public]
+              properties:
+                is_public:
+                  type: boolean
+      responses:
+        '200':
+          description: Agent updated
   /v1/agents/{agent_ref}/bind:
     post:
       summary: Agent trust bind compatibility route
       description: |
         Human-auth trust-management endpoint (not onboarding).
         Creates/updates trust edge between initiating `agent_ref` and peer agent in request body.
+        Prefer `POST /v1/agent-trusts` for new integrations.
+      deprecated: true
       security:
         - humanAuth: []
       parameters:
@@ -755,7 +787,9 @@ paths:
   /v1/messages/publish:
     post:
       summary: Publish message (agent runtime)
-      description: Enqueues outbound message from authenticated agent; delivery requires active trust path.
+      description: |
+        Agent runtime route. Requires agent bearer token.
+        Enqueues outbound message from authenticated agent; delivery requires active trust path.
       security:
         - agentAuth: []
       requestBody:
@@ -781,7 +815,9 @@ paths:
   /v1/messages/pull:
     get:
       summary: Pull next message (agent runtime)
-      description: Dequeues next available message for authenticated agent, optionally long-polling via `timeout_ms`.
+      description: |
+        Agent runtime route. Requires agent bearer token.
+        Dequeues next available message for authenticated agent, optionally long-polling via `timeout_ms`.
       security:
         - agentAuth: []
       parameters:

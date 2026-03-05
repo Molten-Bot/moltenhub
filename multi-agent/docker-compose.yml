@@ -22,7 +22,6 @@ services:
       - ./shrimp/mnt/skills:/mnt/skills
       - ../skills/openclaw-bind-agent:/mnt/skills/openclaw-bind-agent:ro
       - ../skills/openclaw-exchange-messages:/mnt/skills/openclaw-exchange-messages:ro
-      - ../skills/openclaw-update-agent-profile:/mnt/skills/openclaw-update-agent-profile:ro
       - ../skills/openclaw-pull-bound-agents:/mnt/skills/openclaw-pull-bound-agents:ro
       - ./shrimp/mnt/memory:/mnt/memory
       - ./shrimp/openclaw.json:/home/moltenbot/.openclaw/openclaw.json:ro
@@ -49,7 +48,6 @@ services:
       - ./crab/mnt/skills:/mnt/skills
       - ../skills/openclaw-bind-agent:/mnt/skills/openclaw-bind-agent:ro
       - ../skills/openclaw-exchange-messages:/mnt/skills/openclaw-exchange-messages:ro
-      - ../skills/openclaw-update-agent-profile:/mnt/skills/openclaw-update-agent-profile:ro
       - ../skills/openclaw-pull-bound-agents:/mnt/skills/openclaw-pull-bound-agents:ro
       - ./crab/mnt/memory:/mnt/memory
       - ./crab/openclaw.json:/home/moltenbot/.openclaw/openclaw.json:ro
