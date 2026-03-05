@@ -16,6 +16,8 @@ Arguments:
 
 Environment:
   STATOCYST_BASE_URL  Default base URL when not passed explicitly. Default fallback: http://statocyst:8080
+  HUB_HUMAN_BEARER_TOKEN  Optional human bearer token for profile updates on Hub
+  HUB_AGENT_IS_PUBLIC     Optional target visibility for this agent profile: true|false
 USAGE
 }
 
@@ -88,6 +90,29 @@ console.log(JSON.stringify(payload));
   exit 1
 }
 
+parse_error_field() {
+  local file="$1"
+  local field="$2"
+  node -e '
+const fs = require("fs");
+try {
+  const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  if (payload && payload[process.argv[2]] != null) {
+    console.log(String(payload[process.argv[2]]));
+    process.exit(0);
+  }
+} catch (_) {}
+if (process.argv[2] === "message") {
+  try {
+    const text = fs.readFileSync(process.argv[1], "utf8");
+    console.log(text.slice(0, 300));
+    process.exit(0);
+  } catch (_) {}
+}
+console.log("");
+' "$file" "$field"
+}
+
 redeem_payload="$(node -e '
 console.log(JSON.stringify({
   hub_url: process.argv[3],
@@ -102,25 +127,14 @@ redeem_status="$(curl -sS -o "$redeem_tmp" -w "%{http_code}" \
   --data "$redeem_payload")"
 
 if [[ "$redeem_status" != "201" ]]; then
-  error_code="$(node -e '
-const fs = require("fs");
-try {
-  const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-  console.log(String(p.error || "redeem_failed"));
-} catch (_) {
-  console.log("redeem_failed");
-}
-' "$redeem_tmp")"
-  error_message="$(node -e '
-const fs = require("fs");
-try {
-  const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-  console.log(String(p.message || "bind redeem failed"));
-} catch (_) {
-  const t = fs.readFileSync(process.argv[1], "utf8");
-  console.log(t.slice(0, 300));
-}
-' "$redeem_tmp")"
+  error_code="$(parse_error_field "$redeem_tmp" "error")"
+  if [[ -z "$error_code" ]]; then
+    error_code="redeem_failed"
+  fi
+  error_message="$(parse_error_field "$redeem_tmp" "message")"
+  if [[ -z "$error_message" ]]; then
+    error_message="bind redeem failed"
+  fi
   fail_json "$error_code" "$error_message" "$redeem_status"
 fi
 
@@ -144,30 +158,139 @@ const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
 console.log(p.owner_human_id == null ? "" : String(p.owner_human_id));
 ' "$redeem_tmp")"
 
+capabilities_tmp="$(mktemp)"
+trap 'rm -f "$redeem_tmp" "$capabilities_tmp"' EXIT
+
+cap_status="$(curl -sS -o "$capabilities_tmp" -w "%{http_code}" \
+  -X GET "$base_url/v1/agents/me/capabilities" \
+  -H "Authorization: Bearer $token")"
+if [[ "$cap_status" != "200" ]]; then
+  cap_code="$(parse_error_field "$capabilities_tmp" "error")"
+  if [[ -z "$cap_code" ]]; then
+    cap_code="capabilities_failed"
+  fi
+  cap_message="$(parse_error_field "$capabilities_tmp" "message")"
+  if [[ -z "$cap_message" ]]; then
+    cap_message="failed to fetch agent capabilities"
+  fi
+  fail_json "$cap_code" "$cap_message" "$cap_status"
+fi
+
+agent_uuid="$(node -e '
+const fs = require("fs");
+const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const fromAgent = payload && payload.agent ? payload.agent : {};
+const fromCP = payload && payload.control_plane ? payload.control_plane : {};
+const agentUUID = String(fromAgent.agent_uuid || fromCP.agent_uuid || "");
+if (!agentUUID) {
+  process.exit(2);
+}
+console.log(agentUUID);
+' "$capabilities_tmp")" || fail_json "invalid_response" "capabilities response missing agent_uuid" "$cap_status"
+
+discovered_agent_id="$(node -e '
+const fs = require("fs");
+const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const fromAgent = payload && payload.agent ? payload.agent : {};
+const fromCP = payload && payload.control_plane ? payload.control_plane : {};
+console.log(String(fromAgent.agent_id || fromCP.agent_id || ""));
+' "$capabilities_tmp")"
+if [[ -n "$discovered_agent_id" ]]; then
+  agent_id="$discovered_agent_id"
+fi
+
+bound_agents_json="$(node -e '
+const fs = require("fs");
+const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const cp = payload && payload.control_plane ? payload.control_plane : {};
+const peers = Array.isArray(cp.can_talk_to) ? cp.can_talk_to.map(String) : [];
+console.log(JSON.stringify(peers));
+' "$capabilities_tmp")"
+
+profile_updated="false"
+agent_is_public=""
+if [[ -n "${HUB_AGENT_IS_PUBLIC:-}" || -n "${HUB_HUMAN_BEARER_TOKEN:-}" ]]; then
+  raw_visibility="${HUB_AGENT_IS_PUBLIC:-}"
+  if [[ -z "$raw_visibility" ]]; then
+    fail_json "invalid_profile_update_request" "HUB_AGENT_IS_PUBLIC is required when HUB_HUMAN_BEARER_TOKEN is set"
+  fi
+  if [[ -z "${HUB_HUMAN_BEARER_TOKEN:-}" ]]; then
+    fail_json "invalid_profile_update_request" "HUB_HUMAN_BEARER_TOKEN is required when HUB_AGENT_IS_PUBLIC is set"
+  fi
+
+  normalized_visibility="$(echo "$raw_visibility" | tr '[:upper:]' '[:lower:]')"
+  case "$normalized_visibility" in
+    true|1|yes|y|on)
+      agent_is_public="true"
+      ;;
+    false|0|no|n|off)
+      agent_is_public="false"
+      ;;
+    *)
+      fail_json "invalid_profile_visibility" "HUB_AGENT_IS_PUBLIC must be true or false"
+      ;;
+  esac
+
+  profile_tmp="$(mktemp)"
+  trap 'rm -f "$redeem_tmp" "$capabilities_tmp" "$profile_tmp"' EXIT
+  profile_payload="$(node -e '
+console.log(JSON.stringify({
+  is_public: process.argv[1] === "true",
+}));
+' "$agent_is_public")"
+  profile_status="$(curl -sS -o "$profile_tmp" -w "%{http_code}" \
+    -X PATCH "$base_url/v1/agents/$agent_uuid" \
+    -H "Authorization: Bearer $HUB_HUMAN_BEARER_TOKEN" \
+    -H "Content-Type: application/json" \
+    --data "$profile_payload")"
+  if [[ "$profile_status" != "200" ]]; then
+    profile_code="$(parse_error_field "$profile_tmp" "error")"
+    if [[ -z "$profile_code" ]]; then
+      profile_code="profile_update_failed"
+    fi
+    profile_message="$(parse_error_field "$profile_tmp" "message")"
+    if [[ -z "$profile_message" ]]; then
+      profile_message="failed to update agent profile"
+    fi
+    fail_json "$profile_code" "$profile_message" "$profile_status"
+  fi
+  profile_updated="true"
+fi
+
 if [[ "$token_output_file" == "-" ]]; then
   node -e '
 const out = {
   status: "ok",
   base_url: process.argv[1],
-  agent_id: process.argv[2],
-  org_id: process.argv[3],
-  owner_human_id: process.argv[4] || null,
-  token: process.argv[5],
+  agent_uuid: process.argv[2],
+  agent_id: process.argv[3],
+  org_id: process.argv[4],
+  owner_human_id: process.argv[5] || null,
+  bound_agents: JSON.parse(process.argv[6]),
+  can_communicate: JSON.parse(process.argv[6]).length > 0,
+  profile_updated: process.argv[7] === "true",
+  agent_is_public: process.argv[8] === "" ? null : process.argv[8] === "true",
+  token: process.argv[9],
 };
 console.log(JSON.stringify(out));
-' "$base_url" "$agent_id" "$org_id" "$owner_human_id" "$token"
+' "$base_url" "$agent_uuid" "$agent_id" "$org_id" "$owner_human_id" "$bound_agents_json" "$profile_updated" "$agent_is_public" "$token"
 else
   umask 077
   printf '%s\n' "$token" > "$token_output_file"
   node -e '
 const result = {
   status: "ok",
-  base_url: process.argv[4],
-  agent_id: process.argv[1],
-  org_id: process.argv[5],
-  owner_human_id: process.argv[6] || null,
-  token_file: process.argv[3],
+  base_url: process.argv[1],
+  agent_uuid: process.argv[2],
+  agent_id: process.argv[3],
+  org_id: process.argv[4],
+  owner_human_id: process.argv[5] || null,
+  bound_agents: JSON.parse(process.argv[6]),
+  can_communicate: JSON.parse(process.argv[6]).length > 0,
+  profile_updated: process.argv[7] === "true",
+  agent_is_public: process.argv[8] === "" ? null : process.argv[8] === "true",
+  token_file: process.argv[9],
 };
 console.log(JSON.stringify(result));
-' "$agent_id" "$bind_token" "$token_output_file" "$base_url" "$org_id" "$owner_human_id"
+' "$base_url" "$agent_uuid" "$agent_id" "$org_id" "$owner_human_id" "$bound_agents_json" "$profile_updated" "$agent_is_public" "$token_output_file"
 fi
