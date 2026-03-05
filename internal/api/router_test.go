@@ -166,25 +166,66 @@ func acceptInvite(t *testing.T, router http.Handler, humanID, email, inviteID st
 func registerAgentWithUUID(t *testing.T, router http.Handler, humanID, email, orgID, agentID, ownerHumanID string) (string, string) {
 	t.Helper()
 	ensureHandleConfirmed(t, router, humanID, email)
-	body := map[string]any{
+	if ownerHumanID == "" {
+		return bindAgentWithUUID(t, router, humanID, email, orgID, agentID)
+	}
+	resp := doJSONRequest(t, router, http.MethodPost, "/v1/me/agents", map[string]any{
 		"org_id":   orgID,
 		"agent_id": agentID,
-	}
-	if ownerHumanID != "" {
-		body["owner_human_id"] = ownerHumanID
-	}
-	resp := doJSONRequest(t, router, http.MethodPost, "/v1/agents/register", body, humanHeaders(humanID, email))
+	}, humanHeaders(humanID, email))
 	if resp.Code != http.StatusCreated {
-		t.Fatalf("register agent failed: %d %s", resp.Code, resp.Body.String())
+		t.Fatalf("register my agent failed: %d %s", resp.Code, resp.Body.String())
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode register agent: %v", err)
+		t.Fatalf("decode register my agent: %v", err)
 	}
 	token, _ := payload["token"].(string)
 	agentUUID, _ := payload["agent_uuid"].(string)
 	if token == "" || agentUUID == "" {
 		t.Fatalf("missing token or agent_uuid")
+	}
+	return token, agentUUID
+}
+
+func bindAgentWithUUID(t *testing.T, router http.Handler, humanID, email, orgID, agentID string) (string, string) {
+	t.Helper()
+	createResp := doJSONRequest(t, router, http.MethodPost, "/v1/agents/bind-tokens", map[string]any{
+		"org_id": orgID,
+	}, humanHeaders(humanID, email))
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create bind token failed: %d %s", createResp.Code, createResp.Body.String())
+	}
+	createPayload := decodeJSONMap(t, createResp.Body.Bytes())
+	bindToken, _ := createPayload["bind_token"].(string)
+	if bindToken == "" {
+		t.Fatalf("bind token missing")
+	}
+
+	bindResp := doJSONRequest(t, router, http.MethodPost, "/v1/agents/bind", map[string]any{
+		"bind_token": bindToken,
+		"agent_id":   agentID,
+	}, nil)
+	if bindResp.Code != http.StatusCreated {
+		t.Fatalf("bind redeem failed: %d %s", bindResp.Code, bindResp.Body.String())
+	}
+	bindPayload := decodeJSONMap(t, bindResp.Body.Bytes())
+	token, _ := bindPayload["token"].(string)
+	if token == "" {
+		t.Fatalf("bind response missing token")
+	}
+
+	capsResp := doJSONRequest(t, router, http.MethodGet, "/v1/agents/me/capabilities", nil, map[string]string{
+		"Authorization": "Bearer " + token,
+	})
+	if capsResp.Code != http.StatusOK {
+		t.Fatalf("agent capabilities failed: %d %s", capsResp.Code, capsResp.Body.String())
+	}
+	capsPayload := decodeJSONMap(t, capsResp.Body.Bytes())
+	agent, _ := capsPayload["agent"].(map[string]any)
+	agentUUID, _ := agent["agent_uuid"].(string)
+	if agentUUID == "" {
+		t.Fatalf("capabilities missing agent_uuid")
 	}
 	return token, agentUUID
 }
@@ -879,16 +920,15 @@ func TestHumanBoundAgentNameUniqueAcrossHumans(t *testing.T) {
 	router := newTestRouter()
 
 	aliceHumanID := currentHumanID(t, router, "alice", "alice@a.test")
-	bobHumanID := currentHumanID(t, router, "bob", "bob@b.test")
+	_ = currentHumanID(t, router, "bob", "bob@b.test")
 
 	orgA := createOrg(t, router, "alice", "alice@a.test", "Org Human Agent A")
 	orgB := createOrg(t, router, "bob", "bob@b.test", "Org Human Agent B")
 
 	registerAgent(t, router, "alice", "alice@a.test", orgA, "alpha-agent", aliceHumanID)
-	dup := doJSONRequest(t, router, http.MethodPost, "/v1/agents/register", map[string]any{
-		"org_id":         orgB,
-		"agent_id":       "ALPHA-AGENT",
-		"owner_human_id": bobHumanID,
+	dup := doJSONRequest(t, router, http.MethodPost, "/v1/me/agents", map[string]any{
+		"org_id":   orgB,
+		"agent_id": "ALPHA-AGENT",
 	}, humanHeaders("bob", "bob@b.test"))
 	if dup.Code != http.StatusCreated {
 		t.Fatalf("expected 201 for same handle in a different human scope, got %d %s", dup.Code, dup.Body.String())
@@ -905,10 +945,17 @@ func TestOrgBoundAgentNameUniqueWithinOrg(t *testing.T) {
 	orgA := createOrg(t, router, "alice", "alice@a.test", "Org Agents Unique")
 	registerAgent(t, router, "alice", "alice@a.test", orgA, "org-agent", "")
 
-	dup := doJSONRequest(t, router, http.MethodPost, "/v1/agents/register", map[string]any{
-		"org_id":   orgA,
-		"agent_id": "ORG-AGENT",
+	bindCreate := doJSONRequest(t, router, http.MethodPost, "/v1/agents/bind-tokens", map[string]any{
+		"org_id": orgA,
 	}, humanHeaders("alice", "alice@a.test"))
+	if bindCreate.Code != http.StatusCreated {
+		t.Fatalf("expected bind token creation for duplicate org-bound test, got %d %s", bindCreate.Code, bindCreate.Body.String())
+	}
+	bindToken, _ := decodeJSONMap(t, bindCreate.Body.Bytes())["bind_token"].(string)
+	dup := doJSONRequest(t, router, http.MethodPost, "/v1/agents/bind", map[string]any{
+		"bind_token": bindToken,
+		"agent_id":   "ORG-AGENT",
+	}, nil)
 	if dup.Code != http.StatusConflict {
 		t.Fatalf("expected 409 for duplicate org-bound agent name in same org, got %d %s", dup.Code, dup.Body.String())
 	}
@@ -1223,27 +1270,23 @@ func TestAgentLimitAndSuperAdminBypass(t *testing.T) {
 	}
 
 	rootOrg := createOrg(t, router, "root", "root@molten.bot", "Root Ops")
-	rootID := currentHumanID(t, router, "root", "root@molten.bot")
-	createOne := doJSONRequest(t, router, http.MethodPost, "/v1/agents/register", map[string]any{
-		"org_id":         rootOrg,
-		"agent_id":       "root-agent-1",
-		"owner_human_id": rootID,
+	createOne := doJSONRequest(t, router, http.MethodPost, "/v1/me/agents", map[string]any{
+		"org_id":   rootOrg,
+		"agent_id": "root-agent-1",
 	}, humanHeaders("root", "root@molten.bot"))
 	if createOne.Code != http.StatusCreated {
 		t.Fatalf("expected root first agent to be created, got %d %s", createOne.Code, createOne.Body.String())
 	}
-	createTwo := doJSONRequest(t, router, http.MethodPost, "/v1/agents/register", map[string]any{
-		"org_id":         rootOrg,
-		"agent_id":       "root-agent-2",
-		"owner_human_id": rootID,
+	createTwo := doJSONRequest(t, router, http.MethodPost, "/v1/me/agents", map[string]any{
+		"org_id":   rootOrg,
+		"agent_id": "root-agent-2",
 	}, humanHeaders("root", "root@molten.bot"))
 	if createTwo.Code != http.StatusCreated {
 		t.Fatalf("expected root second agent to be created, got %d %s", createTwo.Code, createTwo.Body.String())
 	}
-	createThree := doJSONRequest(t, router, http.MethodPost, "/v1/agents/register", map[string]any{
-		"org_id":         rootOrg,
-		"agent_id":       "root-agent-3",
-		"owner_human_id": rootID,
+	createThree := doJSONRequest(t, router, http.MethodPost, "/v1/me/agents", map[string]any{
+		"org_id":   rootOrg,
+		"agent_id": "root-agent-3",
 	}, humanHeaders("root", "root@molten.bot"))
 	if createThree.Code != http.StatusCreated {
 		t.Fatalf("expected root third agent to bypass limit, got %d %s", createThree.Code, createThree.Body.String())

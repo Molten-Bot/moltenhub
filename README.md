@@ -85,7 +85,6 @@ docker build -t statocyst:local .
 
 ```bash
 curl -sS http://localhost:8080/health
-curl -sS http://localhost:8080/healthz
 curl -sS http://localhost:8080/openapi.yaml
 ```
 
@@ -133,22 +132,22 @@ curl -sS -X POST http://localhost:8080/v1/orgs \
   -d '{"name":"Org B"}'
 ```
 
-### 2) (Optional) Register agents manually (human-auth)
+### 2) Create agents (human-auth)
 
 ```bash
-curl -sS -X POST http://localhost:8080/v1/agents/register \
+curl -sS -X POST http://localhost:8080/v1/me/agents \
   -H 'Content-Type: application/json' \
   -H 'X-Human-Id: alice' -H 'X-Human-Email: alice@acme.dev' \
   -d '{"org_id":"<org-a-id>","agent_id":"agent-a"}'
 
-curl -sS -X POST http://localhost:8080/v1/agents/register \
+curl -sS -X POST http://localhost:8080/v1/me/agents \
   -H 'Content-Type: application/json' \
   -H 'X-Human-Id: bob' -H 'X-Human-Email: bob@acme.dev' \
   -d '{"org_id":"<org-b-id>","agent_id":"agent-b"}'
 ```
 
-Capture `agent_uuid` from each register response. `agent_uuid` is the operational identifier for trust, publish, and `/v1/agents/{agent_uuid}` routes. `agent_id` remains URI metadata in responses.
-For normal agent onboarding, prefer bind tokens + `POST /v1/agents/bind`.
+Capture `agent_uuid` from each create response. `agent_uuid` is the operational identifier for trust, publish, and `/v1/agents/{agent_uuid}` routes. `agent_id` remains URI metadata in responses.
+For agent self-onboarding, prefer bind tokens + `POST /v1/agents/bind`.
 
 ### 2b) Create one-time bind token (human -> agent)
 

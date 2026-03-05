@@ -92,7 +92,7 @@ func parseRouterRegisteredPaths(t *testing.T) []string {
 			continue
 		}
 		path := rest[:end]
-		if path == "/health" || path == "/healthz" || path == "/openapi.yaml" || strings.HasPrefix(path, "/v1/") {
+		if path == "/health" || path == "/openapi.yaml" || strings.HasPrefix(path, "/v1/") {
 			seen[path] = struct{}{}
 		}
 	}
