@@ -619,18 +619,21 @@ func (h *Handler) ensureHumanOwnedAgentLimit(w http.ResponseWriter, ownerHumanID
 }
 
 func (h *Handler) handleAgentMe(w http.ResponseWriter, r *http.Request) {
-	writeMethodNotAllowed(w)
-}
-
-func (h *Handler) handleAgentMeMetadata(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPatch {
 		writeMethodNotAllowed(w)
 		return
 	}
+	h.handleAgentMetadataSelfPatch(w, r, "")
+}
 
+func (h *Handler) handleAgentMetadataSelfPatch(w http.ResponseWriter, r *http.Request, targetAgentUUID string) {
 	agentUUID, err := h.authenticateAgent(r)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
+		return
+	}
+	if targetAgentUUID != "" && normalizeUUID(targetAgentUUID) != agentUUID {
+		writeError(w, http.StatusForbidden, "forbidden", "agent token can only update its own metadata")
 		return
 	}
 
@@ -654,6 +657,14 @@ func (h *Handler) handleAgentMeMetadata(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"agent": agent,
 	})
+}
+
+func (h *Handler) handleAgentMeMetadata(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		writeMethodNotAllowed(w)
+		return
+	}
+	h.handleAgentMetadataSelfPatch(w, r, "")
 }
 
 func (h *Handler) handleAgentMeCapabilities(w http.ResponseWriter, r *http.Request) {
@@ -1717,6 +1728,14 @@ func (h *Handler) handleAgentsSubroutes(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	agentUUID := normalizeUUID(agentRef)
+	if r.Method == http.MethodPatch && action == "" {
+		if !validateUUID(agentUUID) {
+			writeError(w, http.StatusBadRequest, "invalid_agent_uuid", "agent_uuid must be a valid UUID")
+			return
+		}
+		h.handleAgentMetadataSelfPatch(w, r, agentUUID)
+		return
+	}
 	if action != "bind" && !validateUUID(agentUUID) {
 		writeError(w, http.StatusBadRequest, "invalid_agent_uuid", "agent_uuid must be a valid UUID")
 		return

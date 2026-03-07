@@ -1472,6 +1472,43 @@ func TestAgentMeMetadataUpdateEndpoint(t *testing.T) {
 	}
 }
 
+func TestAgentMetadataPatchAliasesSupportSelfOnly(t *testing.T) {
+	router := newTestRouter()
+	_, _, tokenA, _, _, _, agentUUIDA, agentUUIDB := setupTrustedAgents(t, router)
+	headers := map[string]string{"Authorization": "Bearer " + tokenA}
+
+	meAliasResp := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/me", map[string]any{
+		"metadata": map[string]any{"alias": "me"},
+	}, headers)
+	if meAliasResp.Code != http.StatusOK {
+		t.Fatalf("expected PATCH /v1/agents/me 200, got %d %s", meAliasResp.Code, meAliasResp.Body.String())
+	}
+	meAliasPayload := decodeJSONMap(t, meAliasResp.Body.Bytes())
+	meAliasAgent, _ := meAliasPayload["agent"].(map[string]any)
+	if meAliasAgent["agent_uuid"] != agentUUIDA {
+		t.Fatalf("expected /v1/agents/me alias to update authenticated agent %q, got %v", agentUUIDA, meAliasAgent["agent_uuid"])
+	}
+
+	uuidAliasResp := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/"+agentUUIDA, map[string]any{
+		"metadata": map[string]any{"alias": "uuid"},
+	}, headers)
+	if uuidAliasResp.Code != http.StatusOK {
+		t.Fatalf("expected PATCH /v1/agents/{uuid} alias 200 for self, got %d %s", uuidAliasResp.Code, uuidAliasResp.Body.String())
+	}
+	uuidAliasPayload := decodeJSONMap(t, uuidAliasResp.Body.Bytes())
+	uuidAliasAgent, _ := uuidAliasPayload["agent"].(map[string]any)
+	if uuidAliasAgent["agent_uuid"] != agentUUIDA {
+		t.Fatalf("expected /v1/agents/{uuid} alias to update authenticated agent %q, got %v", agentUUIDA, uuidAliasAgent["agent_uuid"])
+	}
+
+	otherUUIDResp := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/"+agentUUIDB, map[string]any{
+		"metadata": map[string]any{"alias": "forbidden"},
+	}, headers)
+	if otherUUIDResp.Code != http.StatusForbidden {
+		t.Fatalf("expected PATCH /v1/agents/{other-uuid} with agent token to return 403, got %d %s", otherUUIDResp.Code, otherUUIDResp.Body.String())
+	}
+}
+
 func TestOpenAPIYAMLHeaders(t *testing.T) {
 	router := newTestRouter()
 	req := httptest.NewRequest(http.MethodGet, "/openapi.yaml", nil)
