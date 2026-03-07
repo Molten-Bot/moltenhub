@@ -656,11 +656,59 @@ func (h *Handler) ensureHumanOwnedAgentLimit(w http.ResponseWriter, ownerHumanID
 }
 
 func (h *Handler) handleAgentMe(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPatch {
+	switch r.Method {
+	case http.MethodGet:
+		agentUUID, err := h.authenticateAgent(r)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
+			return
+		}
+		agent, err := h.control.GetAgentByUUID(agentUUID)
+		if err != nil {
+			if errors.Is(err, store.ErrAgentNotFound) {
+				writeError(w, http.StatusNotFound, "unknown_agent", "agent_uuid is not registered")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "store_error", "failed to load agent")
+			return
+		}
+		org, err := h.control.GetOrganization(agent.OrgID)
+		if err != nil {
+			if errors.Is(err, store.ErrOrgNotFound) {
+				writeError(w, http.StatusNotFound, "unknown_org", "org_id is not registered")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "store_error", "failed to load organization")
+			return
+		}
+
+		var ownerHuman any = nil
+		if agent.OwnerHumanID != nil && strings.TrimSpace(*agent.OwnerHumanID) != "" {
+			human, err := h.control.GetHuman(strings.TrimSpace(*agent.OwnerHumanID))
+			if err != nil {
+				if errors.Is(err, store.ErrHumanNotFound) {
+					writeError(w, http.StatusNotFound, "unknown_human", "owner_human_id is not registered")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "store_error", "failed to load owner human")
+				return
+			}
+			ownerHuman = human
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"agent":        agent,
+			"organization": org,
+			"owner_human":  ownerHuman,
+		})
+		return
+	case http.MethodPatch:
+		h.handleAgentMetadataSelfPatch(w, r, "")
+		return
+	default:
 		writeMethodNotAllowed(w)
 		return
 	}
-	h.handleAgentMetadataSelfPatch(w, r, "")
 }
 
 func (h *Handler) handleAgentMetadataSelfPatch(w http.ResponseWriter, r *http.Request, targetAgentUUID string) {
@@ -2024,26 +2072,7 @@ func (h *Handler) handleAgentsSubroutes(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if action == "metadata" {
-		metadata, err := decodeMetadataUpdateRequest(r)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-			return
-		}
-		agent, err := h.control.UpdateAgentMetadata(agentUUID, metadata, actor.Human.HumanID, h.now().UTC(), actor.IsSuperAdmin)
-		if err != nil {
-			switch {
-			case errors.Is(err, store.ErrAgentNotFound):
-				writeError(w, http.StatusNotFound, "unknown_agent", "agent_uuid is not registered")
-			case errors.Is(err, store.ErrUnauthorizedRole):
-				writeError(w, http.StatusForbidden, "forbidden", "admin/owner required")
-			default:
-				writeError(w, http.StatusInternalServerError, "store_error", "failed to update agent metadata")
-			}
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"agent": agent,
-		})
+		writeError(w, http.StatusForbidden, "forbidden", "human metadata updates for agents are not allowed")
 		return
 	}
 

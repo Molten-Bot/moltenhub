@@ -10,6 +10,17 @@ This version provides:
 - Configurable state backend: `memory` or S3-backed beta state store.
 - Built-in admin web UI.
 
+## Identity Boundary
+
+Statocyst is the canonical identity/control-plane runtime and keeps core objects minimal:
+- Organization: `org_id`, `handle`, `display_name`
+- Human: `human_id`, `handle`, `display_name`
+- Agent: `agent_uuid`, `agent_id`, `display_name`
+
+Additional custom/profile properties are stored in `metadata`.
+Hub owns field-level metadata policy and validation before requests reach statocyst.
+Statocyst validates metadata as JSON object payloads with size limits, then persists values.
+
 ## Runtime Modes
 
 ### Human auth provider

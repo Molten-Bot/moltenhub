@@ -1579,6 +1579,65 @@ func TestAgentMeMetadataUpdateEndpoint(t *testing.T) {
 	}
 }
 
+func TestAgentMeReadIncludesBoundHumanAndOrganization(t *testing.T) {
+	router := newTestRouter()
+	orgID := createOrg(t, router, "alice", "alice@a.test", "Runtime Context Org")
+	aliceHumanID := currentHumanID(t, router, "alice", "alice@a.test")
+
+	humanOwnedToken, humanOwnedUUID := registerAgentWithUUID(
+		t,
+		router,
+		"alice",
+		"alice@a.test",
+		orgID,
+		"human-owned-runtime",
+		aliceHumanID,
+	)
+	humanOwnedResp := doJSONRequest(t, router, http.MethodGet, "/v1/agents/me", nil, map[string]string{
+		"Authorization": "Bearer " + humanOwnedToken,
+	})
+	if humanOwnedResp.Code != http.StatusOK {
+		t.Fatalf("expected GET /v1/agents/me 200 for human-owned agent, got %d %s", humanOwnedResp.Code, humanOwnedResp.Body.String())
+	}
+	humanOwnedPayload := decodeJSONMap(t, humanOwnedResp.Body.Bytes())
+	humanOwnedAgent, _ := humanOwnedPayload["agent"].(map[string]any)
+	if gotAgentUUID, _ := humanOwnedAgent["agent_uuid"].(string); gotAgentUUID != humanOwnedUUID {
+		t.Fatalf("expected authenticated agent_uuid %q, got %q payload=%v", humanOwnedUUID, gotAgentUUID, humanOwnedPayload)
+	}
+	humanOwnedOrg, _ := humanOwnedPayload["organization"].(map[string]any)
+	if gotOrgID, _ := humanOwnedOrg["org_id"].(string); gotOrgID != orgID {
+		t.Fatalf("expected bound organization org_id %q, got %q payload=%v", orgID, gotOrgID, humanOwnedPayload)
+	}
+	ownerHuman, _ := humanOwnedPayload["owner_human"].(map[string]any)
+	if gotHumanID, _ := ownerHuman["human_id"].(string); gotHumanID != aliceHumanID {
+		t.Fatalf("expected bound owner_human.human_id %q, got %q payload=%v", aliceHumanID, gotHumanID, humanOwnedPayload)
+	}
+
+	orgOwnedToken, orgOwnedUUID := registerAgentWithUUID(
+		t,
+		router,
+		"alice",
+		"alice@a.test",
+		orgID,
+		"org-owned-runtime",
+		"",
+	)
+	orgOwnedResp := doJSONRequest(t, router, http.MethodGet, "/v1/agents/me", nil, map[string]string{
+		"Authorization": "Bearer " + orgOwnedToken,
+	})
+	if orgOwnedResp.Code != http.StatusOK {
+		t.Fatalf("expected GET /v1/agents/me 200 for org-owned agent, got %d %s", orgOwnedResp.Code, orgOwnedResp.Body.String())
+	}
+	orgOwnedPayload := decodeJSONMap(t, orgOwnedResp.Body.Bytes())
+	orgOwnedAgent, _ := orgOwnedPayload["agent"].(map[string]any)
+	if gotAgentUUID, _ := orgOwnedAgent["agent_uuid"].(string); gotAgentUUID != orgOwnedUUID {
+		t.Fatalf("expected authenticated org-owned agent_uuid %q, got %q payload=%v", orgOwnedUUID, gotAgentUUID, orgOwnedPayload)
+	}
+	if ownerHuman := orgOwnedPayload["owner_human"]; ownerHuman != nil {
+		t.Fatalf("expected owner_human to be null for org-owned agent, got %v payload=%v", ownerHuman, orgOwnedPayload)
+	}
+}
+
 func TestAgentMetadataPatchAliasesSupportSelfOnly(t *testing.T) {
 	router := newTestRouter()
 	_, _, tokenA, _, _, _, agentUUIDA, agentUUIDB := setupTrustedAgents(t, router)
@@ -1778,6 +1837,67 @@ func TestMetadataValidationRejectsNonObjectAndOversizedPayload(t *testing.T) {
 	}, humanHeaders("alice", "alice@a.test"))
 	if tooLarge.Code != http.StatusBadRequest {
 		t.Fatalf("expected oversized metadata to return 400, got %d %s", tooLarge.Code, tooLarge.Body.String())
+	}
+}
+
+func TestHumanMetadataPassthrough(t *testing.T) {
+	router := newTestRouter()
+	ensureHandleConfirmed(t, router, "alice", "alice@a.test")
+
+	valid := doJSONRequest(t, router, http.MethodPatch, "/v1/me/metadata", map[string]any{
+		"metadata": map[string]any{
+			"title":   "Builder",
+			"status":  "available",
+			"emoji":   "🤖",
+			"website": "https://example.com/h/alice",
+		},
+	}, humanHeaders("alice", "alice@a.test"))
+	if valid.Code != http.StatusOK {
+		t.Fatalf("expected valid human metadata update 200, got %d %s", valid.Code, valid.Body.String())
+	}
+
+	passthrough := doJSONRequest(t, router, http.MethodPatch, "/v1/me/metadata", map[string]any{
+		"metadata": map[string]any{
+			"title":  strings.Repeat("a", 128),
+			"status": 7,
+			"emoji":  "🙂🙂",
+		},
+	}, humanHeaders("alice", "alice@a.test"))
+	if passthrough.Code != http.StatusOK {
+		t.Fatalf("expected statocyst metadata passthrough 200, got %d %s", passthrough.Code, passthrough.Body.String())
+	}
+
+	payload := decodeJSONMap(t, passthrough.Body.Bytes())
+	human, _ := payload["human"].(map[string]any)
+	metadata, _ := human["metadata"].(map[string]any)
+	if metadata["status"] != float64(7) {
+		t.Fatalf("expected numeric passthrough status=7, got %v payload=%v", metadata["status"], payload)
+	}
+}
+
+func TestOrganizationMetadataPassthrough(t *testing.T) {
+	router := newTestRouter()
+	orgID := createOrg(t, router, "alice", "alice@a.test", "Profile Metadata Org")
+
+	valid := doJSONRequest(t, router, http.MethodPatch, "/v1/orgs/"+orgID+"/metadata", map[string]any{
+		"metadata": map[string]any{
+			"imageurl": "https://example.com/logo.png",
+			"location": "Vancouver",
+			"website":  "https://example.com/org",
+		},
+	}, humanHeaders("alice", "alice@a.test"))
+	if valid.Code != http.StatusOK {
+		t.Fatalf("expected valid org metadata update 200, got %d %s", valid.Code, valid.Body.String())
+	}
+
+	passthrough := doJSONRequest(t, router, http.MethodPatch, "/v1/orgs/"+orgID+"/metadata", map[string]any{
+		"metadata": map[string]any{
+			"location": strings.Repeat("x", 256),
+			"imageurl": true,
+		},
+	}, humanHeaders("alice", "alice@a.test"))
+	if passthrough.Code != http.StatusOK {
+		t.Fatalf("expected statocyst metadata passthrough 200, got %d %s", passthrough.Code, passthrough.Body.String())
 	}
 }
 

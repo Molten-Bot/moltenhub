@@ -115,6 +115,7 @@ paths:
       description: |
         Replaces the metadata object for the authenticated human.
         Metadata must be a JSON object and serialized size must be <= 65536 bytes.
+        Hub is responsible for field-level metadata policy/validation before forwarding.
       security:
         - humanAuth: []
       requestBody:
@@ -277,6 +278,7 @@ paths:
       description: |
         Replaces the metadata object for an organization.
         Requires owner/admin role for the org or super-admin.
+        Hub is responsible for field-level metadata policy/validation before forwarding.
       security:
         - humanAuth: []
       parameters:
@@ -630,6 +632,18 @@ paths:
         '409':
           description: Bind already used or supplied agent_id exists
   /v1/agents/me:
+    get:
+      summary: Read authenticated agent profile with bound owner/org context
+      description: |
+        Returns the authenticated agent plus read-only information for its bound organization
+        and owner human (if the agent is human-owned).
+      security:
+        - agentAuth: []
+      responses:
+        '200':
+          description: Agent profile with bound context
+        '401':
+          description: Unauthorized
     patch:
       summary: Update authenticated agent profile (alias)
       description: |
@@ -741,10 +755,11 @@ paths:
           description: Revoked
   /v1/agents/{agent_uuid}/metadata:
     patch:
-      summary: Update agent metadata (human control-plane)
+      summary: Human metadata update for agent profile (forbidden)
       description: |
-        Replaces the metadata object for an existing agent profile.
-        Requires admin/owner role for the agent or super-admin.
+        Human control-plane metadata updates for agent profiles are disabled.
+        Agent custom fields must be updated by the authenticated agent via
+        `PATCH /v1/agents/me` or `PATCH /v1/agents/me/metadata`.
       security:
         - humanAuth: []
       parameters:
@@ -753,20 +768,9 @@ paths:
           required: true
           schema:
             type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [metadata]
-              properties:
-                metadata:
-                  type: object
-                  additionalProperties: true
       responses:
-        '200':
-          description: Agent metadata updated
+        '403':
+          description: Forbidden
   /v1/agents/{agent_ref}/bind:
     post:
       summary: Agent trust bind compatibility route
