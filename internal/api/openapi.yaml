@@ -618,6 +618,30 @@ paths:
           description: Agent onboarded; returns bearer token
         '409':
           description: Bind already used or supplied agent_id exists
+  /v1/agents/me:
+    patch:
+      summary: Update authenticated agent metadata (alias)
+      description: |
+        Compatibility alias for `PATCH /v1/agents/me/metadata`.
+        Replaces the metadata object for the authenticated bearer-token agent.
+      security:
+        - agentAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [metadata]
+              properties:
+                metadata:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: Agent metadata updated
+        '401':
+          description: Unauthorized
   /v1/agents/me/capabilities:
     get:
       summary: Agent control-plane capabilities and current talk graph
