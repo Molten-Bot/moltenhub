@@ -370,3 +370,58 @@ func TestMemoryStoreHumanScopedAgentAndBindWithoutOrg(t *testing.T) {
 		t.Fatalf("expected non-owner create human-scoped bind token to fail with ErrUnauthorizedRole, got %v", err)
 	}
 }
+
+func TestMemoryStoreFinalizeAgentHandleSelfOnce(t *testing.T) {
+	now := time.Date(2026, 3, 7, 0, 0, 0, 0, time.UTC)
+	ids := &seqID{}
+	mem := NewMemoryStore()
+
+	alice := mustCreateHuman(t, mem, ids, "alice", "alice@a.test", "alice", now)
+	org := mustCreateOrg(t, mem, ids, alice, "org-a", "Org A", now)
+
+	bindA, err := mem.CreateBindToken(org.OrgID, &alice.HumanID, alice.HumanID, ids.mustID(t), "bind-a", now.Add(time.Hour), now, false)
+	if err != nil {
+		t.Fatalf("create bind A failed: %v", err)
+	}
+	agentA, err := mem.RedeemBindToken(bindA.TokenHash, "tmp-a", "tok-a", now)
+	if err != nil {
+		t.Fatalf("redeem bind A failed: %v", err)
+	}
+	if agentA.HandleFinalizedAt != nil {
+		t.Fatalf("expected bound agent handle to start unlocked, got %v", agentA.HandleFinalizedAt)
+	}
+
+	finalizedAt := now.Add(time.Minute)
+	finalizedA, err := mem.FinalizeAgentHandleSelf(agentA.AgentUUID, "stable-a", finalizedAt)
+	if err != nil {
+		t.Fatalf("finalize agent A handle failed: %v", err)
+	}
+	if finalizedA.Handle != "stable-a" {
+		t.Fatalf("expected finalized handle stable-a, got %q", finalizedA.Handle)
+	}
+	if finalizedA.HandleFinalizedAt == nil {
+		t.Fatalf("expected finalized handle timestamp to be set")
+	}
+	if !strings.HasSuffix(finalizedA.AgentID, "/stable-a") {
+		t.Fatalf("expected finalized agent URI to end with /stable-a, got %q", finalizedA.AgentID)
+	}
+
+	if _, err := mem.FinalizeAgentHandleSelf(agentA.AgentUUID, "stable-a", now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("expected idempotent finalize with same handle to succeed, got %v", err)
+	}
+	if _, err := mem.FinalizeAgentHandleSelf(agentA.AgentUUID, "stable-a-2", now.Add(3*time.Minute)); !errors.Is(err, ErrAgentHandleLocked) {
+		t.Fatalf("expected second different finalize to fail with ErrAgentHandleLocked, got %v", err)
+	}
+
+	bindB, err := mem.CreateBindToken(org.OrgID, &alice.HumanID, alice.HumanID, ids.mustID(t), "bind-b", now.Add(time.Hour), now, false)
+	if err != nil {
+		t.Fatalf("create bind B failed: %v", err)
+	}
+	agentB, err := mem.RedeemBindToken(bindB.TokenHash, "tmp-b", "tok-b", now)
+	if err != nil {
+		t.Fatalf("redeem bind B failed: %v", err)
+	}
+	if _, err := mem.FinalizeAgentHandleSelf(agentB.AgentUUID, "stable-a", now.Add(4*time.Minute)); !errors.Is(err, ErrAgentExists) {
+		t.Fatalf("expected duplicate finalized handle in same scope to fail with ErrAgentExists, got %v", err)
+	}
+}

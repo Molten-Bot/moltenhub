@@ -973,7 +973,7 @@ func TestMyAgentsAndImmediateSelfBond(t *testing.T) {
 	}
 }
 
-func TestMyAgentBindTokenRedeemWithAgentChosenName(t *testing.T) {
+func TestMyAgentBindTokenRedeemUsesTempHandleThenFinalizesOnce(t *testing.T) {
 	router := newTestRouter()
 	ensureHandleConfirmed(t, router, "alice", "alice@a.test")
 	createResp := doJSONRequest(t, router, http.MethodPost, "/v1/me/agents/bind-tokens", map[string]any{}, humanHeaders("alice", "alice@a.test"))
@@ -995,33 +995,60 @@ func TestMyAgentBindTokenRedeemWithAgentChosenName(t *testing.T) {
 		t.Fatalf("redeem bind token failed: %d %s", redeemResp.Code, redeemResp.Body.String())
 	}
 	redeemPayload := decodeJSONMap(t, redeemResp.Body.Bytes())
-	if redeemPayload["token"] == "" {
+	token, _ := redeemPayload["token"].(string)
+	if token == "" {
 		t.Fatalf("expected bind response token")
 	}
 
-	listResp := doJSONRequest(t, router, http.MethodGet, "/v1/me/agents", nil, humanHeaders("alice", "alice@a.test"))
-	if listResp.Code != http.StatusOK {
-		t.Fatalf("list my agents failed: %d %s", listResp.Code, listResp.Body.String())
+	capsResp := doJSONRequest(t, router, http.MethodGet, "/v1/agents/me/capabilities", nil, map[string]string{
+		"Authorization": "Bearer " + token,
+	})
+	if capsResp.Code != http.StatusOK {
+		t.Fatalf("agent capabilities failed: %d %s", capsResp.Code, capsResp.Body.String())
 	}
-	listPayload := decodeJSONMap(t, listResp.Body.Bytes())
-	agents, ok := listPayload["agents"].([]any)
-	if !ok || len(agents) == 0 {
-		t.Fatalf("expected at least one agent in my list, got %v", listPayload["agents"])
+	capsPayload := decodeJSONMap(t, capsResp.Body.Bytes())
+	capsAgent, _ := capsPayload["agent"].(map[string]any)
+	agentUUID, _ := capsAgent["agent_uuid"].(string)
+	if strings.TrimSpace(agentUUID) == "" {
+		t.Fatalf("expected capabilities payload agent_uuid")
 	}
-	found := false
-	for _, item := range agents {
-		agent, _ := item.(map[string]any)
-		if agent["handle"] == "alice-agent-picked-name" {
-			agentID, _ := agent["agent_id"].(string)
-			if !strings.HasSuffix(agentID, "/alice-agent-picked-name") {
-				t.Fatalf("expected canonical URI to end with /alice-agent-picked-name, got %q", agentID)
-			}
-			found = true
-			break
-		}
+	initialAgentID, _ := capsAgent["agent_id"].(string)
+	if !strings.Contains(initialAgentID, "/tmp-") {
+		t.Fatalf("expected bind redeem to create temporary handle URI, got %q", initialAgentID)
 	}
-	if !found {
-		t.Fatalf("expected agent created via bind redeem to appear in /v1/me/agents")
+
+	firstFinalize := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/me", map[string]any{
+		"handle": "alice-agent-picked-name",
+	}, map[string]string{
+		"Authorization": "Bearer " + token,
+	})
+	if firstFinalize.Code != http.StatusOK {
+		t.Fatalf("expected first finalize patch to return 200, got %d %s", firstFinalize.Code, firstFinalize.Body.String())
+	}
+	firstFinalizePayload := decodeJSONMap(t, firstFinalize.Body.Bytes())
+	firstFinalizeAgent, _ := firstFinalizePayload["agent"].(map[string]any)
+	if firstFinalizeAgent["agent_uuid"] != agentUUID {
+		t.Fatalf("expected finalize to update authenticated agent %q, got %v", agentUUID, firstFinalizeAgent["agent_uuid"])
+	}
+	if firstFinalizeAgent["handle"] != "alice-agent-picked-name" {
+		t.Fatalf("expected finalized handle alice-agent-picked-name, got %v", firstFinalizeAgent["handle"])
+	}
+	firstFinalizeAgentID, _ := firstFinalizeAgent["agent_id"].(string)
+	if !strings.HasSuffix(firstFinalizeAgentID, "/alice-agent-picked-name") {
+		t.Fatalf("expected finalized URI to end with /alice-agent-picked-name, got %q", firstFinalizeAgentID)
+	}
+
+	secondFinalize := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/me", map[string]any{
+		"handle": "alice-agent-second-name",
+	}, map[string]string{
+		"Authorization": "Bearer " + token,
+	})
+	if secondFinalize.Code != http.StatusConflict {
+		t.Fatalf("expected second finalize patch to return 409, got %d %s", secondFinalize.Code, secondFinalize.Body.String())
+	}
+	secondFinalizePayload := decodeJSONMap(t, secondFinalize.Body.Bytes())
+	if secondFinalizePayload["error"] != "agent_handle_locked" {
+		t.Fatalf("expected second finalize error agent_handle_locked, got %v payload=%v", secondFinalizePayload["error"], secondFinalizePayload)
 	}
 }
 
