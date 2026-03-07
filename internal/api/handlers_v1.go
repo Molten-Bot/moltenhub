@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"statocyst/internal/auth"
 	"statocyst/internal/model"
@@ -101,13 +100,6 @@ const (
 	maxInviteExpiryDays     = 365
 	defaultUIAppName        = "Statocyst"
 	maxMetadataBytes        = 64 * 1024
-	maxHumanTitleChars      = 32
-	maxHumanStatusChars     = 32
-	maxHumanEmojiChars      = 1
-	maxHumanWebsiteChars    = 256
-	maxOrgImageURLChars     = 256
-	maxOrgLocationChars     = 32
-	maxOrgWebsiteChars      = 256
 )
 
 func (h *Handler) handleUIConfig(w http.ResponseWriter, r *http.Request) {
@@ -204,60 +196,6 @@ func decodeMetadataJSON(raw json.RawMessage, required bool) (map[string]any, err
 		return nil, fmt.Errorf("metadata exceeds %d bytes", maxMetadataBytes)
 	}
 	return metadata, nil
-}
-
-func validateOptionalMetadataStringField(metadata map[string]any, key string, maxChars int) error {
-	raw, exists := metadata[key]
-	if !exists {
-		return nil
-	}
-	if raw == nil {
-		delete(metadata, key)
-		return nil
-	}
-	text, ok := raw.(string)
-	if !ok {
-		return fmt.Errorf("metadata.%s must be a string", key)
-	}
-	trimmed := strings.TrimSpace(text)
-	if utf8.RuneCountInString(trimmed) > maxChars {
-		return fmt.Errorf("metadata.%s exceeds %d chars", key, maxChars)
-	}
-	if trimmed == "" {
-		delete(metadata, key)
-		return nil
-	}
-	metadata[key] = trimmed
-	return nil
-}
-
-func validateHumanMetadataFields(metadata map[string]any) error {
-	if err := validateOptionalMetadataStringField(metadata, "title", maxHumanTitleChars); err != nil {
-		return err
-	}
-	if err := validateOptionalMetadataStringField(metadata, "status", maxHumanStatusChars); err != nil {
-		return err
-	}
-	if err := validateOptionalMetadataStringField(metadata, "emoji", maxHumanEmojiChars); err != nil {
-		return err
-	}
-	if err := validateOptionalMetadataStringField(metadata, "website", maxHumanWebsiteChars); err != nil {
-		return err
-	}
-	return nil
-}
-
-func validateOrganizationMetadataFields(metadata map[string]any) error {
-	if err := validateOptionalMetadataStringField(metadata, "imageurl", maxOrgImageURLChars); err != nil {
-		return err
-	}
-	if err := validateOptionalMetadataStringField(metadata, "location", maxOrgLocationChars); err != nil {
-		return err
-	}
-	if err := validateOptionalMetadataStringField(metadata, "website", maxOrgWebsiteChars); err != nil {
-		return err
-	}
-	return nil
 }
 
 func decodeAgentProfileUpdateRequest(r *http.Request) (*string, map[string]any, error) {
@@ -373,10 +311,6 @@ func (h *Handler) handleMeMetadata(w http.ResponseWriter, r *http.Request) {
 
 	metadata, err := decodeMetadataUpdateRequest(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	if err := validateHumanMetadataFields(metadata); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
@@ -1337,10 +1271,6 @@ func (h *Handler) handleOrgSubroutes(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
-		if err := validateOrganizationMetadataFields(metadata); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-			return
-		}
 		org, err := h.control.UpdateOrgMetadata(orgID, metadata, actor.Human.HumanID, actor.IsSuperAdmin, h.now().UTC())
 		if err != nil {
 			switch {
@@ -2142,26 +2072,7 @@ func (h *Handler) handleAgentsSubroutes(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if action == "metadata" {
-		metadata, err := decodeMetadataUpdateRequest(r)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-			return
-		}
-		agent, err := h.control.UpdateAgentMetadata(agentUUID, metadata, actor.Human.HumanID, h.now().UTC(), actor.IsSuperAdmin)
-		if err != nil {
-			switch {
-			case errors.Is(err, store.ErrAgentNotFound):
-				writeError(w, http.StatusNotFound, "unknown_agent", "agent_uuid is not registered")
-			case errors.Is(err, store.ErrUnauthorizedRole):
-				writeError(w, http.StatusForbidden, "forbidden", "admin/owner required")
-			default:
-				writeError(w, http.StatusInternalServerError, "store_error", "failed to update agent metadata")
-			}
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"agent": agent,
-		})
+		writeError(w, http.StatusForbidden, "forbidden", "human metadata updates for agents are not allowed")
 		return
 	}
 

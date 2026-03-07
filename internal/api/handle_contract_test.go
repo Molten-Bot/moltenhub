@@ -151,16 +151,8 @@ func TestCanonicalAgentURIAndUUIDLifecycleRoutes(t *testing.T) {
 			"public": false,
 		},
 	}, humanHeaders("alice", "alice@a.test"))
-	if metadata.Code != http.StatusOK {
-		t.Fatalf("expected metadata patch with agent_uuid to succeed, got %d %s", metadata.Code, metadata.Body.String())
-	}
-	metadataPayload := decodeJSONMap(t, metadata.Body.Bytes())
-	agentObj, _ := metadataPayload["agent"].(map[string]any)
-	if agentObj["agent_id"] != canonicalAgentID {
-		t.Fatalf("expected visibility response agent_id=%q, got %v", canonicalAgentID, agentObj["agent_id"])
-	}
-	if agentObj["agent_uuid"] != agentUUID {
-		t.Fatalf("expected visibility response agent_uuid=%q, got %v", agentUUID, agentObj["agent_uuid"])
+	if metadata.Code != http.StatusForbidden {
+		t.Fatalf("expected metadata patch with agent_uuid to be forbidden for humans, got %d %s", metadata.Code, metadata.Body.String())
 	}
 
 	rotate := doJSONRequest(t, router, http.MethodPost, "/v1/agents/"+agentUUID+"/rotate-token", nil, humanHeaders("alice", "alice@a.test"))

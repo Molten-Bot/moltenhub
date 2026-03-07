@@ -1840,7 +1840,7 @@ func TestMetadataValidationRejectsNonObjectAndOversizedPayload(t *testing.T) {
 	}
 }
 
-func TestHumanMetadataFieldConstraints(t *testing.T) {
+func TestHumanMetadataPassthrough(t *testing.T) {
 	router := newTestRouter()
 	ensureHandleConfirmed(t, router, "alice", "alice@a.test")
 
@@ -1856,35 +1856,26 @@ func TestHumanMetadataFieldConstraints(t *testing.T) {
 		t.Fatalf("expected valid human metadata update 200, got %d %s", valid.Code, valid.Body.String())
 	}
 
-	titleTooLong := doJSONRequest(t, router, http.MethodPatch, "/v1/me/metadata", map[string]any{
+	passthrough := doJSONRequest(t, router, http.MethodPatch, "/v1/me/metadata", map[string]any{
 		"metadata": map[string]any{
-			"title": strings.Repeat("a", maxHumanTitleChars+1),
-		},
-	}, humanHeaders("alice", "alice@a.test"))
-	if titleTooLong.Code != http.StatusBadRequest {
-		t.Fatalf("expected title length violation 400, got %d %s", titleTooLong.Code, titleTooLong.Body.String())
-	}
-
-	emojiTooLong := doJSONRequest(t, router, http.MethodPatch, "/v1/me/metadata", map[string]any{
-		"metadata": map[string]any{
-			"emoji": "🙂🙂",
-		},
-	}, humanHeaders("alice", "alice@a.test"))
-	if emojiTooLong.Code != http.StatusBadRequest {
-		t.Fatalf("expected emoji length violation 400, got %d %s", emojiTooLong.Code, emojiTooLong.Body.String())
-	}
-
-	statusWrongType := doJSONRequest(t, router, http.MethodPatch, "/v1/me/metadata", map[string]any{
-		"metadata": map[string]any{
+			"title":  strings.Repeat("a", 128),
 			"status": 7,
+			"emoji":  "🙂🙂",
 		},
 	}, humanHeaders("alice", "alice@a.test"))
-	if statusWrongType.Code != http.StatusBadRequest {
-		t.Fatalf("expected status type violation 400, got %d %s", statusWrongType.Code, statusWrongType.Body.String())
+	if passthrough.Code != http.StatusOK {
+		t.Fatalf("expected statocyst metadata passthrough 200, got %d %s", passthrough.Code, passthrough.Body.String())
+	}
+
+	payload := decodeJSONMap(t, passthrough.Body.Bytes())
+	human, _ := payload["human"].(map[string]any)
+	metadata, _ := human["metadata"].(map[string]any)
+	if metadata["status"] != float64(7) {
+		t.Fatalf("expected numeric passthrough status=7, got %v payload=%v", metadata["status"], payload)
 	}
 }
 
-func TestOrganizationMetadataFieldConstraints(t *testing.T) {
+func TestOrganizationMetadataPassthrough(t *testing.T) {
 	router := newTestRouter()
 	orgID := createOrg(t, router, "alice", "alice@a.test", "Profile Metadata Org")
 
@@ -1899,22 +1890,14 @@ func TestOrganizationMetadataFieldConstraints(t *testing.T) {
 		t.Fatalf("expected valid org metadata update 200, got %d %s", valid.Code, valid.Body.String())
 	}
 
-	locationTooLong := doJSONRequest(t, router, http.MethodPatch, "/v1/orgs/"+orgID+"/metadata", map[string]any{
+	passthrough := doJSONRequest(t, router, http.MethodPatch, "/v1/orgs/"+orgID+"/metadata", map[string]any{
 		"metadata": map[string]any{
-			"location": strings.Repeat("x", maxOrgLocationChars+1),
-		},
-	}, humanHeaders("alice", "alice@a.test"))
-	if locationTooLong.Code != http.StatusBadRequest {
-		t.Fatalf("expected location length violation 400, got %d %s", locationTooLong.Code, locationTooLong.Body.String())
-	}
-
-	imageWrongType := doJSONRequest(t, router, http.MethodPatch, "/v1/orgs/"+orgID+"/metadata", map[string]any{
-		"metadata": map[string]any{
+			"location": strings.Repeat("x", 256),
 			"imageurl": true,
 		},
 	}, humanHeaders("alice", "alice@a.test"))
-	if imageWrongType.Code != http.StatusBadRequest {
-		t.Fatalf("expected imageurl type violation 400, got %d %s", imageWrongType.Code, imageWrongType.Body.String())
+	if passthrough.Code != http.StatusOK {
+		t.Fatalf("expected statocyst metadata passthrough 200, got %d %s", passthrough.Code, passthrough.Body.String())
 	}
 }
 
