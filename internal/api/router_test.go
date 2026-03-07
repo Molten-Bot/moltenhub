@@ -1397,21 +1397,62 @@ func TestOrgBoundAgentNameUniqueWithinOrg(t *testing.T) {
 	router := newTestRouter()
 
 	orgA := createOrg(t, router, "alice", "alice@a.test", "Org Agents Unique")
-	registerAgent(t, router, "alice", "alice@a.test", orgA, "org-agent", "")
-
-	bindCreate := doJSONRequest(t, router, http.MethodPost, "/v1/agents/bind-tokens", map[string]any{
+	bindCreateA := doJSONRequest(t, router, http.MethodPost, "/v1/agents/bind-tokens", map[string]any{
 		"org_id": orgA,
 	}, humanHeaders("alice", "alice@a.test"))
-	if bindCreate.Code != http.StatusCreated {
-		t.Fatalf("expected bind token creation for duplicate org-bound test, got %d %s", bindCreate.Code, bindCreate.Body.String())
+	if bindCreateA.Code != http.StatusCreated {
+		t.Fatalf("expected bind token creation for duplicate org-bound test, got %d %s", bindCreateA.Code, bindCreateA.Body.String())
 	}
-	bindToken, _ := decodeJSONMap(t, bindCreate.Body.Bytes())["bind_token"].(string)
-	dup := doJSONRequest(t, router, http.MethodPost, "/v1/agents/bind", map[string]any{
-		"bind_token": bindToken,
-		"agent_id":   "ORG-AGENT",
+	bindTokenA, _ := decodeJSONMap(t, bindCreateA.Body.Bytes())["bind_token"].(string)
+	if strings.TrimSpace(bindTokenA) == "" {
+		t.Fatalf("expected first bind token")
+	}
+	redeemA := doJSONRequest(t, router, http.MethodPost, "/v1/agents/bind", map[string]any{
+		"bind_token": bindTokenA,
 	}, nil)
+	if redeemA.Code != http.StatusCreated {
+		t.Fatalf("expected first bind redeem success, got %d %s", redeemA.Code, redeemA.Body.String())
+	}
+	tokenA, _ := decodeJSONMap(t, redeemA.Body.Bytes())["token"].(string)
+	if strings.TrimSpace(tokenA) == "" {
+		t.Fatalf("expected first agent token from bind redeem")
+	}
+	finalizeA := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/me", map[string]any{
+		"handle": "org-agent",
+	}, map[string]string{
+		"Authorization": "Bearer " + tokenA,
+	})
+	if finalizeA.Code != http.StatusOK {
+		t.Fatalf("expected first org-bound finalize success, got %d %s", finalizeA.Code, finalizeA.Body.String())
+	}
+
+	bindCreateB := doJSONRequest(t, router, http.MethodPost, "/v1/agents/bind-tokens", map[string]any{
+		"org_id": orgA,
+	}, humanHeaders("alice", "alice@a.test"))
+	if bindCreateB.Code != http.StatusCreated {
+		t.Fatalf("expected second bind token creation success, got %d %s", bindCreateB.Code, bindCreateB.Body.String())
+	}
+	bindTokenB, _ := decodeJSONMap(t, bindCreateB.Body.Bytes())["bind_token"].(string)
+	if strings.TrimSpace(bindTokenB) == "" {
+		t.Fatalf("expected second bind token")
+	}
+	redeemB := doJSONRequest(t, router, http.MethodPost, "/v1/agents/bind", map[string]any{
+		"bind_token": bindTokenB,
+	}, nil)
+	if redeemB.Code != http.StatusCreated {
+		t.Fatalf("expected second bind redeem success, got %d %s", redeemB.Code, redeemB.Body.String())
+	}
+	tokenB, _ := decodeJSONMap(t, redeemB.Body.Bytes())["token"].(string)
+	if strings.TrimSpace(tokenB) == "" {
+		t.Fatalf("expected second agent token from bind redeem")
+	}
+	dup := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/me", map[string]any{
+		"handle": "ORG-AGENT",
+	}, map[string]string{
+		"Authorization": "Bearer " + tokenB,
+	})
 	if dup.Code != http.StatusConflict {
-		t.Fatalf("expected 409 for duplicate org-bound agent name in same org, got %d %s", dup.Code, dup.Body.String())
+		t.Fatalf("expected 409 for duplicate org-bound finalize handle in same org, got %d %s", dup.Code, dup.Body.String())
 	}
 	body := decodeJSONMap(t, dup.Body.Bytes())
 	if body["error"] != "agent_exists" {
