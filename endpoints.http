@@ -63,7 +63,7 @@ X-Human-Email: {{aliceHumanEmail}}
 {
   "metadata": {
     "public": true,
-    "description": "Alice profile"
+    "testing": "Alice profile"
   }
 }
 
