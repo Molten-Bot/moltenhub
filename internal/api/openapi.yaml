@@ -223,7 +223,8 @@ paths:
       description: |
         Metadata feed for website rendering across organizations, humans, and agents.
         Access requires system header `X-Entities-Metadata-Key` matching `STATOCYST_ENTITIES_METADATA_KEY`.
-        Currently supports `public=true` filter only and returns entities with public metadata.
+        Currently supports `public=true` filter only and returns entities whose `metadata.public` is explicitly `true`.
+        Entities without explicit public metadata are excluded.
         Response shape is keyed objects (not arrays):
         - `entities.organizations.<org_handle> -> { id, metadata }`
         - `entities.humans.<human_handle> -> { id, metadata }`

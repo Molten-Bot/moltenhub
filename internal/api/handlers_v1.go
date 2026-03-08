@@ -1040,6 +1040,18 @@ func metadataPublicOrDefault(metadata map[string]any) bool {
 	return publicValue
 }
 
+func metadataPublicStrict(metadata map[string]any) bool {
+	raw, ok := metadata["public"]
+	if !ok {
+		return false
+	}
+	publicValue, ok := raw.(bool)
+	if !ok {
+		return false
+	}
+	return publicValue
+}
+
 func snapshotMetadataPublicView(metadata map[string]any) map[string]any {
 	out := map[string]any{}
 	if publicValue, ok := metadata["public"].(bool); ok {
@@ -1064,12 +1076,9 @@ func entityMetadataForRender(metadata map[string]any) map[string]any {
 	if len(metadata) == 0 {
 		return map[string]any{}
 	}
-	out := make(map[string]any, len(metadata)+1)
+	out := make(map[string]any, len(metadata))
 	for k, v := range metadata {
 		out[k] = v
-	}
-	if _, ok := out["public"]; !ok {
-		out["public"] = true
 	}
 	return out
 }
@@ -1094,47 +1103,56 @@ func (h *Handler) handleEntitiesMetadata(w http.ResponseWriter, r *http.Request)
 
 	organizations := map[string]any{}
 	for _, org := range admin.Organizations {
-		if !metadataPublicOrDefault(org.Metadata) {
+		if !metadataPublicStrict(org.Metadata) {
 			continue
 		}
 		key := strings.TrimSpace(org.Handle)
 		if key == "" {
 			key = org.OrgID
 		}
-		organizations[key] = map[string]any{
-			"id":       org.OrgID,
-			"metadata": entityMetadataForRender(org.Metadata),
+		row := map[string]any{
+			"id": org.OrgID,
 		}
+		if metadata := entityMetadataForRender(org.Metadata); len(metadata) > 0 {
+			row["metadata"] = metadata
+		}
+		organizations[key] = row
 	}
 
 	humans := map[string]any{}
 	for _, human := range admin.Humans {
-		if !metadataPublicOrDefault(human.Metadata) {
+		if !metadataPublicStrict(human.Metadata) {
 			continue
 		}
 		key := strings.TrimSpace(human.Handle)
 		if key == "" {
 			key = human.HumanID
 		}
-		humans[key] = map[string]any{
-			"id":       human.HumanID,
-			"metadata": entityMetadataForRender(human.Metadata),
+		row := map[string]any{
+			"id": human.HumanID,
 		}
+		if metadata := entityMetadataForRender(human.Metadata); len(metadata) > 0 {
+			row["metadata"] = metadata
+		}
+		humans[key] = row
 	}
 
 	agents := map[string]any{}
 	for _, agent := range admin.Agents {
-		if !metadataPublicOrDefault(agent.Metadata) {
+		if !metadataPublicStrict(agent.Metadata) {
 			continue
 		}
 		key := strings.TrimSpace(agent.AgentID)
 		if key == "" {
 			key = agent.AgentUUID
 		}
-		agents[key] = map[string]any{
-			"id":       agent.AgentUUID,
-			"metadata": entityMetadataForRender(agent.Metadata),
+		row := map[string]any{
+			"id": agent.AgentUUID,
 		}
+		if metadata := entityMetadataForRender(agent.Metadata); len(metadata) > 0 {
+			row["metadata"] = metadata
+		}
+		agents[key] = row
 	}
 
 	entities := map[string]any{}
