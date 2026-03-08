@@ -331,7 +331,9 @@ paths:
     post:
       summary: Create short-lived one-time agent bind token for current human
       description: |
-        Human-auth route to mint a bind token for an org-owned agent onboarding flow.
+        Human-auth route to mint a bind token for agent onboarding.
+        If `org_id` is provided, the token is scoped to that organization.
+        If `org_id` is omitted/empty, the token is for a human-owned (no-org) agent.
         The token is then redeemed by the agent at `POST /v1/agents/bind`.
       security:
         - humanAuth: []
@@ -341,7 +343,6 @@ paths:
           application/json:
             schema:
               type: object
-              required: [org_id]
               properties:
                 org_id:
                   type: string
