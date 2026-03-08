@@ -141,9 +141,9 @@ func (h *Handler) handleUIConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"auth":           authConfig,
-		"dev_auto_login": strings.EqualFold(strings.TrimSpace(os.Getenv("DEV_LOGIN_AUTO")), "true"),
-		"admin":          adminConfig,
+		"auth":               authConfig,
+		"dev_auto_login":     strings.EqualFold(strings.TrimSpace(os.Getenv("DEV_LOGIN_AUTO")), "true"),
+		"admin":              adminConfig,
 		"bind_token_ttl_sec": int(h.bindTokenTTL.Seconds()),
 		"headless_mode":      h.headlessMode,
 	})
@@ -260,9 +260,9 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 			}(),
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"human":          actor.Human,
-			"is_super_admin": actor.IsSuperAdmin,
-			"onboarding":     onboarding,
+			"human":      actor.Human,
+			"is_admin":   actor.IsSuperAdmin,
+			"onboarding": onboarding,
 		})
 		return
 	case http.MethodPatch:
@@ -296,8 +296,8 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"human":          human,
-			"is_super_admin": actor.IsSuperAdmin,
+			"human":    human,
+			"is_admin": actor.IsSuperAdmin,
 			"onboarding": map[string]any{
 				"handle_required":  true,
 				"handle_confirmed": human.HandleConfirmedAt != nil,
@@ -415,7 +415,7 @@ func (h *Handler) handleMyAgents(w http.ResponseWriter, r *http.Request) {
 			case errors.Is(err, store.ErrInvalidHandle):
 				writeError(w, http.StatusBadRequest, "invalid_agent_id", "agent_id must be 2-64 chars, URL-safe (a-z, 0-9, ., _, -), and not blocked")
 			case errors.Is(err, store.ErrAgentLimitExceeded):
-				writeError(w, http.StatusConflict, "agent_limit_reached", "non-super-admin users can only own up to 2 active agents")
+				writeError(w, http.StatusConflict, "agent_limit_reached", "non-admin users can only own up to 2 active agents")
 			default:
 				writeError(w, http.StatusInternalServerError, "store_error", "failed to register agent")
 			}
@@ -519,7 +519,7 @@ func (h *Handler) handleMyAgentTrusts(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON request")
 			return
 		}
-		h.handleAgentTrustCreate(w, actor, req, "owner/admin required for initiating agent")
+		h.handleAgentTrustCreate(w, actor, req, "owner required for initiating agent")
 		return
 	default:
 		writeMethodNotAllowed(w)
@@ -666,7 +666,7 @@ func (h *Handler) ensureHumanOwnedAgentLimit(w http.ResponseWriter, ownerHumanID
 		return false
 	}
 	if h.control.CountActiveHumanOwnedAgents(ownerHumanID) >= 2 {
-		writeError(w, http.StatusConflict, "agent_limit_reached", "non-super-admin users can only own up to 2 active agents")
+		writeError(w, http.StatusConflict, "agent_limit_reached", "non-admin users can only own up to 2 active agents")
 		return true
 	}
 	return false
@@ -1006,7 +1006,7 @@ func (h *Handler) handleAdminSnapshot(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !actor.IsSuperAdmin {
-			writeError(w, http.StatusForbidden, "forbidden", "super admin required")
+			writeError(w, http.StatusForbidden, "forbidden", "admin required")
 			return
 		}
 	}
@@ -1294,7 +1294,7 @@ func (h *Handler) handleOrgSubroutes(w http.ResponseWriter, r *http.Request) {
 			case errors.Is(err, store.ErrOrgNotFound):
 				writeError(w, http.StatusNotFound, "unknown_org", "org_id is not registered")
 			case errors.Is(err, store.ErrUnauthorizedRole):
-				writeError(w, http.StatusForbidden, "forbidden", "role owner/admin required")
+				writeError(w, http.StatusForbidden, "forbidden", "owner role required")
 			default:
 				writeError(w, http.StatusInternalServerError, "store_error", "failed to update organization metadata")
 			}
@@ -1315,7 +1315,7 @@ func (h *Handler) handleOrgSubroutes(w http.ResponseWriter, r *http.Request) {
 				case errors.Is(err, store.ErrOrgNotFound):
 					writeError(w, http.StatusNotFound, "unknown_org", "org_id is not registered")
 				case errors.Is(err, store.ErrUnauthorizedRole):
-					writeError(w, http.StatusForbidden, "forbidden", "role owner/admin required")
+					writeError(w, http.StatusForbidden, "forbidden", "owner role required")
 				default:
 					writeError(w, http.StatusInternalServerError, "store_error", "failed to list invites")
 				}
@@ -1375,7 +1375,7 @@ func (h *Handler) handleOrgSubroutes(w http.ResponseWriter, r *http.Request) {
 				case errors.Is(err, store.ErrOrgNotFound):
 					writeError(w, http.StatusNotFound, "unknown_org", "org_id is not registered")
 				case errors.Is(err, store.ErrUnauthorizedRole):
-					writeError(w, http.StatusForbidden, "forbidden", "role owner/admin required")
+					writeError(w, http.StatusForbidden, "forbidden", "owner role required")
 				case errors.Is(err, store.ErrInvalidRole):
 					writeError(w, http.StatusBadRequest, "invalid_role", "role must be admin|member|viewer")
 				case errors.Is(err, store.ErrInviteInvalid):
@@ -1405,7 +1405,7 @@ func (h *Handler) handleOrgSubroutes(w http.ResponseWriter, r *http.Request) {
 					case errors.Is(err, store.ErrOrgNotFound):
 						writeError(w, http.StatusNotFound, "unknown_org", "org_id is not registered")
 					case errors.Is(err, store.ErrUnauthorizedRole):
-						writeError(w, http.StatusForbidden, "forbidden", "role owner/admin required")
+						writeError(w, http.StatusForbidden, "forbidden", "owner role required")
 					default:
 						writeError(w, http.StatusInternalServerError, "store_error", "failed to list access keys")
 					}
@@ -1457,7 +1457,7 @@ func (h *Handler) handleOrgSubroutes(w http.ResponseWriter, r *http.Request) {
 					case errors.Is(err, store.ErrOrgNotFound):
 						writeError(w, http.StatusNotFound, "unknown_org", "org_id is not registered")
 					case errors.Is(err, store.ErrUnauthorizedRole):
-						writeError(w, http.StatusForbidden, "forbidden", "role owner/admin required")
+						writeError(w, http.StatusForbidden, "forbidden", "owner role required")
 					case errors.Is(err, store.ErrOrgAccessScopeDenied):
 						writeError(w, http.StatusBadRequest, "invalid_scopes", "at least one valid scope is required")
 					default:
@@ -1493,7 +1493,7 @@ func (h *Handler) handleOrgSubroutes(w http.ResponseWriter, r *http.Request) {
 				case errors.Is(err, store.ErrOrgAccessKeyNotFound):
 					writeError(w, http.StatusNotFound, "unknown_access_key", "key_id is not registered")
 				case errors.Is(err, store.ErrUnauthorizedRole):
-					writeError(w, http.StatusForbidden, "forbidden", "role owner/admin required")
+					writeError(w, http.StatusForbidden, "forbidden", "owner role required")
 				default:
 					writeError(w, http.StatusInternalServerError, "store_error", "failed to revoke access key")
 				}
@@ -1549,7 +1549,7 @@ func (h *Handler) handleOrgSubroutes(w http.ResponseWriter, r *http.Request) {
 				case errors.Is(err, store.ErrCannotRevokeOwner):
 					writeError(w, http.StatusBadRequest, "cannot_revoke_owner", "owner membership cannot be revoked")
 				case errors.Is(err, store.ErrUnauthorizedRole):
-					writeError(w, http.StatusForbidden, "forbidden", "owner/admin required")
+					writeError(w, http.StatusForbidden, "forbidden", "owner required")
 				default:
 					writeError(w, http.StatusInternalServerError, "store_error", "failed to revoke human membership")
 				}
@@ -1823,7 +1823,7 @@ func (h *Handler) handleOrgInvites(w http.ResponseWriter, r *http.Request) {
 			case errors.Is(err, store.ErrInviteNotFound):
 				writeError(w, http.StatusNotFound, "unknown_invite", "invite_id is not registered")
 			case errors.Is(err, store.ErrUnauthorizedRole):
-				writeError(w, http.StatusForbidden, "forbidden", "invite recipient or org admin required")
+				writeError(w, http.StatusForbidden, "forbidden", "invite recipient or org owner required")
 			default:
 				writeError(w, http.StatusInternalServerError, "store_error", "failed to revoke invite")
 			}
@@ -2055,7 +2055,7 @@ func (h *Handler) handleAgentsSubroutes(w http.ResponseWriter, r *http.Request) 
 		} else {
 			req.AgentID = agentRef
 		}
-		h.handleAgentTrustCreate(w, actor, req, "owner/admin required for initiating agent")
+		h.handleAgentTrustCreate(w, actor, req, "owner required for initiating agent")
 		return
 	}
 
@@ -2149,7 +2149,7 @@ func (h *Handler) handleOrgTrusts(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, store.ErrOrgNotFound):
 			writeError(w, http.StatusNotFound, "unknown_org", "org_id or peer_org_id is not registered")
 		case errors.Is(err, store.ErrUnauthorizedRole):
-			writeError(w, http.StatusForbidden, "forbidden", "owner/admin required")
+			writeError(w, http.StatusForbidden, "forbidden", "owner required")
 		case errors.Is(err, store.ErrSelfTrust):
 			writeError(w, http.StatusBadRequest, "invalid_peer_org_id", "peer_org_id cannot equal org_id")
 		default:
@@ -2243,7 +2243,7 @@ func (h *Handler) handleAgentTrusts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON request")
 		return
 	}
-	h.handleAgentTrustCreate(w, actor, req, "owner/admin required in org")
+	h.handleAgentTrustCreate(w, actor, req, "owner required in org")
 }
 
 func (h *Handler) handleAgentTrustByID(w http.ResponseWriter, r *http.Request) {
@@ -2312,7 +2312,7 @@ func (h *Handler) writeTrustErr(w http.ResponseWriter, err error, kind string) {
 	case errors.Is(err, store.ErrTrustNotFound):
 		writeError(w, http.StatusNotFound, "unknown_trust", kind+"_trust id is not registered")
 	case errors.Is(err, store.ErrUnauthorizedRole):
-		writeError(w, http.StatusForbidden, "forbidden", "owner/admin required")
+		writeError(w, http.StatusForbidden, "forbidden", "owner required")
 	case errors.Is(err, store.ErrAgentNotFound):
 		writeError(w, http.StatusNotFound, "unknown_agent", "agent not found")
 	default:

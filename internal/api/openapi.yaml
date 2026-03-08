@@ -137,7 +137,10 @@ paths:
   /v1/me:
     get:
       summary: Current human identity
-      description: Human control-plane route. Returns authenticated human profile + onboarding state.
+      description: |
+        Human control-plane route.
+        Returns authenticated human profile + onboarding state, including `is_admin`
+        for statocyst-host administrator privileges.
       security:
         - humanAuth: []
       responses:
@@ -187,10 +190,10 @@ paths:
           description: Human metadata updated
   /v1/admin/snapshot:
     get:
-      summary: Super-admin read-only global snapshot
+      summary: Admin read-only global snapshot
       description: |
         Internal diagnostics/export endpoint across all orgs.
-        Access is granted to super-admin humans or callers presenting `X-Admin-Snapshot-Key` that matches `STATOCYST_ADMIN_SNAPSHOT_KEY`.
+        Access is granted to statocyst admins or callers presenting `X-Admin-Snapshot-Key` that matches `STATOCYST_ADMIN_SNAPSHOT_KEY`.
       parameters:
         - in: header
           name: X-Admin-Snapshot-Key
@@ -204,7 +207,7 @@ paths:
         '200':
           description: Global metadata snapshot
         '403':
-          description: Super admin required
+          description: Admin required
   /v1/public/snapshot:
     get:
       summary: Public filtered snapshot
@@ -330,7 +333,7 @@ paths:
       summary: Update organization metadata
       description: |
         Replaces the metadata object for an organization.
-        Requires owner/admin role for the org or super-admin.
+        Requires owner role for the org or statocyst admin.
         Hub is responsible for field-level metadata policy/validation before forwarding.
       security:
         - humanAuth: []

@@ -34,8 +34,8 @@ Statocyst validates metadata as JSON object payloads with size limits, then pers
   - `SUPER_ADMIN_DOMAINS=molten.bot` (broader; optional)
   - Requires verified email claim when using Supabase (`email_verified=true`).
 - Super-admin review toggle:
-  - `SUPER_ADMIN_REVIEW_MODE=false` (default): super-admin identities behave like normal users.
-  - `SUPER_ADMIN_REVIEW_MODE=true`: super-admin identities can read across orgs but remain read-only for writes.
+- `SUPER_ADMIN_REVIEW_MODE=false` (default): admin identities behave like normal users.
+- `SUPER_ADMIN_REVIEW_MODE=true`: admin identities can read across orgs but remain read-only for writes.
 - Optional UI config privileged key:
   - `UI_CONFIG_API_KEY=<secret>` enables privileged access to sensitive `/v1/ui/config` fields for trusted setup callers.
   - `supabase_anon_key` is intentionally returned by `/v1/ui/config` for browser auth bootstrap.
@@ -105,7 +105,7 @@ Useful local keys:
 
 - `DEV_LOGIN_HUMAN_ID` and `DEV_LOGIN_HUMAN_EMAIL`: dev identity used by `/` login page in `HUMAN_AUTH_PROVIDER=dev`.
 - `DEV_LOGIN_AUTO=true`: auto-redirect from login page into `/profile` as that dev user.
-- `SUPER_ADMIN_REVIEW_MODE=true` + `SUPER_ADMIN_EMAILS=...`: test super-admin visibility/behavior locally.
+- `SUPER_ADMIN_REVIEW_MODE=true` + `SUPER_ADMIN_EMAILS=...`: test admin visibility/behavior locally.
 
 Test UI changes locally without Docker Hub:
 
@@ -145,7 +145,7 @@ Open:
 ```text
 http://localhost:8080/              # login page (human login via Supabase when enabled)
 http://localhost:8080/profile       # user profile + memberships + invite acceptance
-http://localhost:8080/organization  # org admin area (create org, invite humans, org metrics)
+http://localhost:8080/organization  # org owner area (create org, invite humans, org metrics)
 http://localhost:8080/agents        # agent lifecycle + pending agent trust approvals
 http://localhost:8080/domains       # legacy all-in-one page (kept for review)
 ```
