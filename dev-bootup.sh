@@ -17,6 +17,9 @@ fi
 
 export HUMAN_AUTH_PROVIDER="${HUMAN_AUTH_PROVIDER:-dev}"
 export STATOCYST_UI_DEV_MODE="${STATOCYST_UI_DEV_MODE:-true}"
+export GOCACHE="${GOCACHE:-/tmp/statocyst-gocache}"
+
+mkdir -p "${GOCACHE}"
 
 list_port_pids() {
   lsof -tiTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null || true
@@ -58,6 +61,7 @@ ensure_port_free
 
 echo "Starting statocyst (native) at http://localhost:${PORT}"
 echo "STATOCYST_ADDR=${STATOCYST_ADDR} HUMAN_AUTH_PROVIDER=${HUMAN_AUTH_PROVIDER} STATOCYST_UI_DEV_MODE=${STATOCYST_UI_DEV_MODE}"
+echo "GOCACHE=${GOCACHE}"
 echo "Press Ctrl+C to stop."
 
 exec go run ./cmd/statocystd
