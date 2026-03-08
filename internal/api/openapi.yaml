@@ -140,18 +140,44 @@ paths:
       summary: Current human identity
       description: |
         Human control-plane route.
-        Returns authenticated human profile + onboarding state, including `admin`
+        Returns authenticated human profile, including `admin`
         for statocyst-host administrator privileges.
+        The `onboarding` object is included only while onboarding is incomplete.
       security:
         - humanAuth: []
       responses:
         '200':
           description: Human
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [human, admin]
+                properties:
+                  human:
+                    type: object
+                    additionalProperties: true
+                  admin:
+                    type: boolean
+                  onboarding:
+                    type: object
+                    description: Present only while onboarding is incomplete.
+                    required: [handle_required, handle_confirmed, next_step]
+                    properties:
+                      handle_required:
+                        type: boolean
+                      handle_confirmed:
+                        type: boolean
+                      next_step:
+                        type: string
+                        enum: [set_handle]
         '401':
           description: Unauthorized
     patch:
       summary: Update current human profile
-      description: Updates mutable human profile fields.
+      description: |
+        Updates mutable human profile fields.
+        Returns `onboarding` only if onboarding is still incomplete after the update.
       security:
         - humanAuth: []
       requestBody:
@@ -166,6 +192,29 @@ paths:
       responses:
         '200':
           description: Human updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [human, admin]
+                properties:
+                  human:
+                    type: object
+                    additionalProperties: true
+                  admin:
+                    type: boolean
+                  onboarding:
+                    type: object
+                    description: Present only while onboarding is incomplete.
+                    required: [handle_required, handle_confirmed, next_step]
+                    properties:
+                      handle_required:
+                        type: boolean
+                      handle_confirmed:
+                        type: boolean
+                      next_step:
+                        type: string
+                        enum: [set_handle]
   /v1/me/metadata:
     patch:
       summary: Update current human metadata

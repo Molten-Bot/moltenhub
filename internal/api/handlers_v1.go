@@ -266,6 +266,28 @@ func decodeAgentProfileUpdateRequest(r *http.Request) (*string, map[string]any, 
 	return handle, metadata, nil
 }
 
+func meOnboardingPayload(handleConfirmedAt *time.Time) map[string]any {
+	if handleConfirmedAt != nil {
+		return nil
+	}
+	return map[string]any{
+		"handle_required":  true,
+		"handle_confirmed": false,
+		"next_step":        "set_handle",
+	}
+}
+
+func meResponsePayload(human model.Human, isAdmin bool) map[string]any {
+	payload := map[string]any{
+		"human": human,
+		"admin": isAdmin,
+	}
+	if onboarding := meOnboardingPayload(human.HandleConfirmedAt); onboarding != nil {
+		payload["onboarding"] = onboarding
+	}
+	return payload
+}
+
 func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 	actor, err := h.authenticateHuman(r)
 	if err != nil {
@@ -275,21 +297,7 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		onboarding := map[string]any{
-			"handle_required":  true,
-			"handle_confirmed": actor.Human.HandleConfirmedAt != nil,
-			"next_step": func() string {
-				if actor.Human.HandleConfirmedAt == nil {
-					return "set_handle"
-				}
-				return "complete"
-			}(),
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"human":      actor.Human,
-			"admin":      actor.IsSuperAdmin,
-			"onboarding": onboarding,
-		})
+		writeJSON(w, http.StatusOK, meResponsePayload(actor.Human, actor.IsSuperAdmin))
 		return
 	case http.MethodPatch:
 		var req updateMyProfileRequest
@@ -321,15 +329,7 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"human": human,
-			"admin": actor.IsSuperAdmin,
-			"onboarding": map[string]any{
-				"handle_required":  true,
-				"handle_confirmed": human.HandleConfirmedAt != nil,
-				"next_step":        "complete",
-			},
-		})
+		writeJSON(w, http.StatusOK, meResponsePayload(human, actor.IsSuperAdmin))
 		return
 	default:
 		writeMethodNotAllowed(w)
