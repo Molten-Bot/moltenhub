@@ -108,27 +108,44 @@ func (h *Handler) handleUIConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	supabaseAnonKey := h.supabaseAnonKey
-	devHumanEmail := ""
+	authConfig := map[string]any{
+		"human": h.humanAuth.Name(),
+	}
+	if h.humanAuth.Name() == "supabase" {
+		supabaseConfig := map[string]any{}
+		if strings.TrimSpace(h.supabaseURL) != "" {
+			supabaseConfig["url"] = h.supabaseURL
+		}
+		if strings.TrimSpace(h.supabaseAnonKey) != "" {
+			supabaseConfig["anon_key"] = h.supabaseAnonKey
+		}
+		if len(supabaseConfig) > 0 {
+			authConfig["supabase"] = supabaseConfig
+		}
+	}
+
 	superAdminEmails := []string{}
 	if hasUIConfigPrivilegedAccess(r) {
-		devHumanEmail = strings.TrimSpace(strings.ToLower(os.Getenv("DEV_LOGIN_HUMAN_EMAIL")))
 		superAdminEmails = setToSortedSlice(h.superAdminEmails)
+	}
+	adminConfig := map[string]any{
+		"review_mode":  h.superAdminReview,
+		"write_policy": "global_write",
+	}
+	if len(superAdminEmails) > 0 {
+		adminConfig["emails"] = superAdminEmails
+	}
+	superAdminDomains := setToSortedSlice(h.superAdminDomains)
+	if len(superAdminDomains) > 0 {
+		adminConfig["domains"] = superAdminDomains
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"human_auth_provider":      h.humanAuth.Name(),
-		"supabase_url":             h.supabaseURL,
-		"supabase_anon_key":        supabaseAnonKey,
-		"dev_human_id":             strings.TrimSpace(os.Getenv("DEV_LOGIN_HUMAN_ID")),
-		"dev_human_email":          devHumanEmail,
-		"dev_auto_login":           strings.EqualFold(strings.TrimSpace(os.Getenv("DEV_LOGIN_AUTO")), "true"),
-		"super_admin_emails":       superAdminEmails,
-		"super_admin_domains":      setToSortedSlice(h.superAdminDomains),
-		"super_admin_review_mode":  h.superAdminReview,
-		"super_admin_write_policy": "global_write",
-		"bind_token_ttl_sec":       int(h.bindTokenTTL.Seconds()),
-		"headless_mode":            h.headlessMode,
+		"auth":           authConfig,
+		"dev_auto_login": strings.EqualFold(strings.TrimSpace(os.Getenv("DEV_LOGIN_AUTO")), "true"),
+		"admin":          adminConfig,
+		"bind_token_ttl_sec": int(h.bindTokenTTL.Seconds()),
+		"headless_mode":      h.headlessMode,
 	})
 }
 

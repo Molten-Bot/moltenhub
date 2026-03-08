@@ -68,9 +68,11 @@ paths:
       summary: UI auth runtime configuration
       description: |
         Runtime configuration consumed by bundled UI clients; external agents usually do not need this.
-        `supabase_anon_key` is intentionally included for browser auth bootstrap.
+        `auth.human` declares the active human auth provider.
+        When provider is `supabase`, `auth.supabase` is included and `anon_key` is intentionally exposed for browser auth bootstrap.
+        Empty string/array fields are omitted from the JSON response.
         Privileged fields are redacted by default.
-        When `UI_CONFIG_API_KEY` is configured server-side, callers can send header `X-UI-Config-Key` with the matching value to receive unredacted `dev_human_email` and `super_admin_emails`.
+        When `UI_CONFIG_API_KEY` is configured server-side, callers can send header `X-UI-Config-Key` with the matching value to receive unredacted `admin.emails`.
       parameters:
         - in: header
           name: X-UI-Config-Key
@@ -81,6 +83,54 @@ paths:
       responses:
         '200':
           description: UI config
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - auth
+                  - dev_auto_login
+                  - admin
+                  - bind_token_ttl_sec
+                  - headless_mode
+                properties:
+                  auth:
+                    type: object
+                    required: [human]
+                    properties:
+                      human:
+                        type: string
+                        enum: [dev, supabase]
+                      supabase:
+                        type: object
+                        properties:
+                          url:
+                            type: string
+                          anon_key:
+                            type: string
+                  dev_auto_login:
+                    type: boolean
+                  admin:
+                    type: object
+                    required: [review_mode, write_policy]
+                    properties:
+                      emails:
+                        type: array
+                        items:
+                          type: string
+                      domains:
+                        type: array
+                        items:
+                          type: string
+                      review_mode:
+                        type: boolean
+                      write_policy:
+                        type: string
+                        enum: [global_write]
+                  bind_token_ttl_sec:
+                    type: integer
+                  headless_mode:
+                    type: boolean
   /v1/me:
     get:
       summary: Current human identity
