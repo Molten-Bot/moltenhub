@@ -33,6 +33,8 @@ GET {{baseUrl}}/v1/ui/config
 GET {{baseUrl}}/v1/entities/metadata?public=true
 X-Entities-Metadata-Key: {{entitiesMetadataKey}}
 
+### HUMANs Section
+
 ###
 # Caller: Human (Alice)
 # @name alice_me_get
@@ -103,6 +105,8 @@ X-Human-Email: {{bobHumanEmail}}
 
 # HUMAN TESTING COMPLETED UP UNTIL HERE>>>DO NOT REMOVE THIS LINE, I WILL COME BACK AND KEEP TESTING
 
+### ORGs Section
+
 ###
 # Caller: Human (Alice)
 # @name create_org_alpha
@@ -160,7 +164,7 @@ X-Human-Email: {{aliceHumanEmail}}
 
 ###
 # Caller: Human (Alice)
-# @name create_invite_accept
+# @name create_invite_bob
 POST {{baseUrl}}/v1/orgs/{{create_org_alpha.response.body.$.organization.org_id}}/invites
 Content-Type: application/json
 X-Human-Id: {{aliceHumanId}}
@@ -173,20 +177,7 @@ X-Human-Email: {{aliceHumanEmail}}
 
 ###
 # Caller: Human (Alice)
-# @name create_invite_redeem
-POST {{baseUrl}}/v1/orgs/{{create_org_alpha.response.body.$.organization.org_id}}/invites
-Content-Type: application/json
-X-Human-Id: {{aliceHumanId}}
-X-Human-Email: {{aliceHumanEmail}}
-
-{
-  "email": "{{bobHumanEmail}}",
-  "role": "member"
-}
-
-###
-# Caller: Human (Alice)
-# @name create_invite_revoke
+# @name create_invite_bob_duplicate_should_conflict
 POST {{baseUrl}}/v1/orgs/{{create_org_alpha.response.body.$.organization.org_id}}/invites
 Content-Type: application/json
 X-Human-Id: {{aliceHumanId}}
@@ -214,11 +205,12 @@ X-Human-Email: {{bobHumanEmail}}
 ###
 # Caller: Human (Bob)
 # @name accept_invite
-POST {{baseUrl}}/v1/org-invites/{{create_invite_accept.response.body.$.invite.invite_id}}/accept
+POST {{baseUrl}}/v1/org-invites/{{create_invite_bob.response.body.$.invite.invite_id}}/accept
 X-Human-Id: {{bobHumanId}}
 X-Human-Email: {{bobHumanEmail}}
 
 ###
+# Alternative to `accept_invite` above. Use on a fresh pending invite.
 # Caller: Human (Bob)
 # @name redeem_invite
 POST {{baseUrl}}/v1/org-invites/redeem
@@ -227,13 +219,22 @@ X-Human-Id: {{bobHumanId}}
 X-Human-Email: {{bobHumanEmail}}
 
 {
-  "invite_code": "{{create_invite_redeem.response.body.$.invite_code}}"
+  "invite_id": "{{create_invite_bob.response.body.$.invite.invite_id}}"
 }
 
 ###
+# Alternative to `accept_invite` above. Invite recipient denies by deleting invite.
+# Caller: Human (Bob)
+# @name deny_invite
+DELETE {{baseUrl}}/v1/org-invites/{{create_invite_bob.response.body.$.invite.invite_id}}
+X-Human-Id: {{bobHumanId}}
+X-Human-Email: {{bobHumanEmail}}
+
+###
+# Alternative to `deny_invite`: org owner revokes by deleting invite.
 # Caller: Human (Alice)
 # @name revoke_invite
-DELETE {{baseUrl}}/v1/org-invites/{{create_invite_revoke.response.body.$.invite.invite_id}}
+DELETE {{baseUrl}}/v1/org-invites/{{create_invite_bob.response.body.$.invite.invite_id}}
 X-Human-Id: {{aliceHumanId}}
 X-Human-Email: {{aliceHumanEmail}}
 
@@ -270,43 +271,78 @@ X-Org-Access-Key: {{create_org_access_key.response.body.$.key}}
 GET {{baseUrl}}/v1/org-access/agents?org_name={{alphaOrgHandle}}
 X-Org-Access-Key: {{create_org_access_key.response.body.$.key}}
 
+### AGENTs Section
+
 ###
-# Caller: Human (Alice)
-# @name create_agent_a
-POST {{baseUrl}}/v1/me/agents
+# Caller: Human (Alice) - mint bind token for Agent A
+# @name create_agent_a_bind_token
+POST {{baseUrl}}/v1/agents/bind-tokens
 Content-Type: application/json
 X-Human-Id: {{aliceHumanId}}
 X-Human-Email: {{aliceHumanEmail}}
 
 {
-  "org_id": "{{create_org_alpha.response.body.$.organization.org_id}}",
-  "agent_id": "alpha-agent-one"
+  "org_id": "{{create_org_alpha.response.body.$.organization.org_id}}"
 }
 
 ###
-# Caller: Human (Bob)
+# Caller: Agent bootstrap - Agent A self-onboards (this creates the agent)
+# @name create_agent_a
+POST {{baseUrl}}/v1/agents/bind
+Content-Type: application/json
+
+{
+  "bind_token": "{{create_agent_a_bind_token.response.body.$.bind_token}}",
+  "agent_id": "alpha-agent-one",
+  "hub_url": "{{baseUrl}}"
+}
+
+###
+# Caller: Human (Bob) - mint bind token for Agent B
+# @name create_agent_b_bind_token
+POST {{baseUrl}}/v1/agents/bind-tokens
+Content-Type: application/json
+X-Human-Id: {{bobHumanId}}
+X-Human-Email: {{bobHumanEmail}}
+
+{
+  "org_id": "{{create_org_beta.response.body.$.organization.org_id}}"
+}
+
+###
+# Caller: Agent bootstrap - Agent B self-onboards (this creates the agent)
 # @name create_agent_b
-POST {{baseUrl}}/v1/me/agents
+POST {{baseUrl}}/v1/agents/bind
 Content-Type: application/json
-X-Human-Id: {{bobHumanId}}
-X-Human-Email: {{bobHumanEmail}}
 
 {
-  "org_id": "{{create_org_beta.response.body.$.organization.org_id}}",
-  "agent_id": "beta-agent-one"
+  "bind_token": "{{create_agent_b_bind_token.response.body.$.bind_token}}",
+  "agent_id": "beta-agent-one",
+  "hub_url": "{{baseUrl}}"
 }
 
 ###
-# Caller: Human (Bob)
-# @name create_agent_b2
-POST {{baseUrl}}/v1/me/agents
+# Caller: Human (Bob) - mint bind token for Agent B2
+# @name create_agent_b2_bind_token
+POST {{baseUrl}}/v1/agents/bind-tokens
 Content-Type: application/json
 X-Human-Id: {{bobHumanId}}
 X-Human-Email: {{bobHumanEmail}}
 
 {
-  "org_id": "{{create_org_beta.response.body.$.organization.org_id}}",
-  "agent_id": "beta-agent-two"
+  "org_id": "{{create_org_beta.response.body.$.organization.org_id}}"
+}
+
+###
+# Caller: Agent bootstrap - Agent B2 self-onboards (this creates the agent)
+# @name create_agent_b2
+POST {{baseUrl}}/v1/agents/bind
+Content-Type: application/json
+
+{
+  "bind_token": "{{create_agent_b2_bind_token.response.body.$.bind_token}}",
+  "agent_id": "beta-agent-two",
+  "hub_url": "{{baseUrl}}"
 }
 
 ###
@@ -404,6 +440,8 @@ Authorization: Bearer {{redeem_bind_token.response.body.$.token}}
 # @name agent_me_skill
 GET {{baseUrl}}/v1/agents/me/skill
 Authorization: Bearer {{redeem_bind_token.response.body.$.token}}
+
+### ORG TRUSTs Section
 
 ###
 # Caller: Human (Alice)

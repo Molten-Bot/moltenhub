@@ -32,8 +32,9 @@ type createInviteRequest struct {
 	ExpiresInDays *int   `json:"expires_in_days,omitempty"`
 }
 
-type redeemInviteCodeRequest struct {
-	InviteCode string `json:"invite_code"`
+type redeemInviteRequest struct {
+	InviteID   string `json:"invite_id,omitempty"`
+	InviteCode string `json:"invite_code,omitempty"`
 }
 
 type createBindTokenRequest struct {
@@ -399,63 +400,6 @@ func (h *Handler) handleMyAgents(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, map[string]any{
 			"agents": h.control.ListHumanAgents(actor.Human.HumanID),
-		})
-		return
-	case http.MethodPost:
-		if h.requireHandleConfirmedForWrite(w, actor) {
-			return
-		}
-		var req registerAgentRequest
-		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON request")
-			return
-		}
-
-		req.OrgID = strings.TrimSpace(req.OrgID)
-		req.AgentID = normalizeHandle(req.AgentID)
-		if !validateAgentID(req.AgentID) {
-			writeError(w, http.StatusBadRequest, "invalid_agent_id", "agent_id must be 2-64 chars, URL-safe (a-z, 0-9, ., _, -), and not blocked")
-			return
-		}
-
-		ownerHumanID := actor.Human.HumanID
-		if h.ensureHumanOwnedAgentLimit(w, ownerHumanID) {
-			return
-		}
-		token, err := auth.GenerateToken()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "token_generation_failed", "failed to generate token")
-			return
-		}
-		agent, err := h.control.RegisterAgent(req.OrgID, req.AgentID, &ownerHumanID, auth.HashToken(token), actor.Human.HumanID, h.now().UTC(), actor.IsSuperAdmin)
-		if err != nil {
-			switch {
-			case errors.Is(err, store.ErrOrgNotFound):
-				writeError(w, http.StatusNotFound, "unknown_org", "org_id is not registered")
-			case errors.Is(err, store.ErrUnauthorizedRole):
-				writeError(w, http.StatusForbidden, "forbidden", "membership in org required")
-			case errors.Is(err, store.ErrMembershipNotFound):
-				writeError(w, http.StatusBadRequest, "invalid_owner_human_id", "owner_human_id must be active in org")
-			case errors.Is(err, store.ErrAgentExists):
-				writeError(w, http.StatusConflict, "agent_exists", "agent_id already registered")
-			case errors.Is(err, store.ErrInvalidHandle):
-				writeError(w, http.StatusBadRequest, "invalid_agent_id", "agent_id must be 2-64 chars, URL-safe (a-z, 0-9, ., _, -), and not blocked")
-			case errors.Is(err, store.ErrAgentLimitExceeded):
-				writeError(w, http.StatusConflict, "agent_limit_reached", "non-admin users can only own up to 2 active agents")
-			default:
-				writeError(w, http.StatusInternalServerError, "store_error", "failed to register agent")
-			}
-			return
-		}
-
-		writeJSON(w, http.StatusCreated, map[string]any{
-			"agent_uuid":     agent.AgentUUID,
-			"agent_id":       agent.AgentID,
-			"handle":         agent.Handle,
-			"org_id":         agent.OrgID,
-			"owner_human_id": agent.OwnerHumanID,
-			"token":          token,
-			"status":         agent.Status,
 		})
 		return
 	default:
@@ -1519,6 +1463,8 @@ func (h *Handler) handleOrgSubroutes(w http.ResponseWriter, r *http.Request) {
 					writeError(w, http.StatusNotFound, "unknown_org", "org_id is not registered")
 				case errors.Is(err, store.ErrUnauthorizedRole):
 					writeError(w, http.StatusForbidden, "forbidden", "owner role required")
+				case errors.Is(err, store.ErrInviteExists):
+					writeError(w, http.StatusConflict, "invite_exists", "invite already exists or invitee is already an active member")
 				case errors.Is(err, store.ErrInvalidRole):
 					writeError(w, http.StatusBadRequest, "invalid_role", "role must be admin|member|viewer")
 				case errors.Is(err, store.ErrInviteInvalid):
@@ -1529,8 +1475,7 @@ func (h *Handler) handleOrgSubroutes(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeJSON(w, http.StatusCreated, map[string]any{
-				"invite":      invite,
-				"invite_code": inviteCode,
+				"invite": invite,
 			})
 			return
 		default:
@@ -1904,25 +1849,31 @@ func (h *Handler) handleOrgInvites(w http.ResponseWriter, r *http.Request) {
 		if h.requireHandleConfirmedForWrite(w, actor) {
 			return
 		}
-		var req redeemInviteCodeRequest
+		var req redeemInviteRequest
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON request")
 			return
 		}
+		inviteID := strings.TrimSpace(req.InviteID)
 		inviteCode := strings.TrimSpace(req.InviteCode)
-		if inviteCode == "" {
-			writeError(w, http.StatusBadRequest, "invalid_invite_code", "invite_code is required")
+		if inviteID == "" && inviteCode == "" {
+			writeError(w, http.StatusBadRequest, "invalid_invite", "invite_id or invite_code is required")
 			return
 		}
-		membership, err := h.control.AcceptInviteBySecretHash(auth.HashToken(inviteCode), actor.Human.HumanID, actor.Human.Email, h.now().UTC(), h.idFactory)
+		var membership model.Membership
+		if inviteID != "" {
+			membership, err = h.control.AcceptInvite(inviteID, actor.Human.HumanID, actor.Human.Email, h.now().UTC(), h.idFactory)
+		} else {
+			membership, err = h.control.AcceptInviteBySecretHash(auth.HashToken(inviteCode), actor.Human.HumanID, actor.Human.Email, h.now().UTC(), h.idFactory)
+		}
 		if err != nil {
 			switch {
 			case errors.Is(err, store.ErrInviteNotFound):
-				writeError(w, http.StatusNotFound, "unknown_invite_code", "invite_code is not registered")
+				writeError(w, http.StatusNotFound, "unknown_invite", "invite is not registered")
 			case errors.Is(err, store.ErrInviteInvalid):
-				writeError(w, http.StatusBadRequest, "invalid_invite_code", "invite code cannot be redeemed by this user")
+				writeError(w, http.StatusBadRequest, "invalid_invite", "invite cannot be redeemed by this user")
 			default:
-				writeError(w, http.StatusInternalServerError, "store_error", "failed to redeem invite code")
+				writeError(w, http.StatusInternalServerError, "store_error", "failed to redeem invite")
 			}
 			return
 		}
@@ -1972,7 +1923,14 @@ func (h *Handler) handleOrgInvites(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"invite": invite})
+		result := "revoked"
+		if strings.EqualFold(strings.TrimSpace(actor.Human.Email), strings.TrimSpace(invite.Email)) {
+			result = "denied"
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"invite": invite,
+			"result": result,
+		})
 		return
 	}
 

@@ -26,6 +26,7 @@ var (
 	ErrMembershipNotFound   = errors.New("membership not found")
 	ErrInviteNotFound       = errors.New("invite not found")
 	ErrInviteInvalid        = errors.New("invite invalid")
+	ErrInviteExists         = errors.New("invite already exists")
 	ErrOrgAccessKeyNotFound = errors.New("org access key not found")
 	ErrOrgAccessKeyInvalid  = errors.New("org access key invalid")
 	ErrOrgAccessScopeDenied = errors.New("org access scope denied")
@@ -366,11 +367,32 @@ func (s *MemoryStore) CreateInvite(orgID, email, role, actorHumanID, inviteID, i
 	if !expiresAt.After(now) {
 		return model.Invite{}, ErrInviteInvalid
 	}
+	normalizedEmail := strings.ToLower(strings.TrimSpace(email))
+	for _, inv := range s.invites {
+		if inv.OrgID != orgID || !strings.EqualFold(inv.Email, normalizedEmail) {
+			continue
+		}
+		if deriveInviteStatus(inv, now).Status == model.StatusPending {
+			return model.Invite{}, ErrInviteExists
+		}
+	}
+	for _, membership := range s.memberships {
+		if membership.OrgID != orgID || membership.Status != model.StatusActive {
+			continue
+		}
+		human, ok := s.humans[membership.HumanID]
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(human.Email), normalizedEmail) {
+			return model.Invite{}, ErrInviteExists
+		}
+	}
 
 	invite := model.Invite{
 		InviteID:     inviteID,
 		OrgID:        orgID,
-		Email:        strings.ToLower(strings.TrimSpace(email)),
+		Email:        normalizedEmail,
 		Role:         role,
 		Status:       model.StatusPending,
 		CreatedBy:    actorHumanID,
