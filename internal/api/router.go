@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"errors"
@@ -319,7 +320,59 @@ func (h *Handler) clearQueueRuntimeError() {
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	encoded := payload
+	if pruned, err := pruneEmptyJSONObjectFields(payload); err == nil {
+		encoded = pruned
+	}
+	_ = json.NewEncoder(w).Encode(encoded)
+}
+
+func pruneEmptyJSONObjectFields(payload any) (any, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return payload, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return payload, err
+	}
+	pruned, keep := pruneEmptyObjects(decoded)
+	if !keep {
+		return map[string]any{}, nil
+	}
+	return pruned, nil
+}
+
+func pruneEmptyObjects(value any) (any, bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for k, v := range typed {
+			next, keep := pruneEmptyObjects(v)
+			if !keep {
+				continue
+			}
+			out[k] = next
+		}
+		if len(out) == 0 {
+			return nil, false
+		}
+		return out, true
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, v := range typed {
+			next, keep := pruneEmptyObjects(v)
+			if !keep {
+				continue
+			}
+			out = append(out, next)
+		}
+		return out, true
+	default:
+		return value, true
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, code string, message string) {
