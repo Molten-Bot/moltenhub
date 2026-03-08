@@ -1060,6 +1060,20 @@ func snapshotMetadataPublicView(metadata map[string]any) map[string]any {
 	return out
 }
 
+func entityMetadataForRender(metadata map[string]any) map[string]any {
+	if len(metadata) == 0 {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(metadata)+1)
+	for k, v := range metadata {
+		out[k] = v
+	}
+	if _, ok := out["public"]; !ok {
+		out["public"] = true
+	}
+	return out
+}
+
 func (h *Handler) handleEntitiesMetadata(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w)
@@ -1078,79 +1092,59 @@ func (h *Handler) handleEntitiesMetadata(w http.ResponseWriter, r *http.Request)
 
 	admin := h.control.AdminSnapshot()
 
-	organizations := make([]map[string]any, 0)
+	organizations := map[string]any{}
 	for _, org := range admin.Organizations {
 		if !metadataPublicOrDefault(org.Metadata) {
 			continue
 		}
-		row := map[string]any{
-			"org_id":       org.OrgID,
-			"handle":       org.Handle,
-			"display_name": org.DisplayName,
+		key := strings.TrimSpace(org.Handle)
+		if key == "" {
+			key = org.OrgID
 		}
-		if metadata := snapshotMetadataPublicView(org.Metadata); len(metadata) > 0 {
-			row["metadata"] = metadata
+		organizations[key] = map[string]any{
+			"id":       org.OrgID,
+			"metadata": entityMetadataForRender(org.Metadata),
 		}
-		organizations = append(organizations, row)
 	}
-	sort.Slice(organizations, func(i, j int) bool {
-		return fmt.Sprintf("%v", organizations[i]["handle"]) < fmt.Sprintf("%v", organizations[j]["handle"])
-	})
 
-	humans := make([]map[string]any, 0)
+	humans := map[string]any{}
 	for _, human := range admin.Humans {
 		if !metadataPublicOrDefault(human.Metadata) {
 			continue
 		}
-		row := map[string]any{
-			"human_id": human.HumanID,
-			"handle":   human.Handle,
+		key := strings.TrimSpace(human.Handle)
+		if key == "" {
+			key = human.HumanID
 		}
-		if metadata := snapshotMetadataPublicView(human.Metadata); len(metadata) > 0 {
-			row["metadata"] = metadata
+		humans[key] = map[string]any{
+			"id":       human.HumanID,
+			"metadata": entityMetadataForRender(human.Metadata),
 		}
-		humans = append(humans, row)
 	}
-	sort.Slice(humans, func(i, j int) bool {
-		return fmt.Sprintf("%v", humans[i]["handle"]) < fmt.Sprintf("%v", humans[j]["handle"])
-	})
 
-	agents := make([]map[string]any, 0)
+	agents := map[string]any{}
 	for _, agent := range admin.Agents {
 		if !metadataPublicOrDefault(agent.Metadata) {
 			continue
 		}
-		row := map[string]any{
-			"agent_uuid": agent.AgentUUID,
-			"agent_id":   agent.AgentID,
-			"org_id":     agent.OrgID,
-			"status":     agent.Status,
+		key := strings.TrimSpace(agent.AgentID)
+		if key == "" {
+			key = agent.AgentUUID
 		}
-		if agent.OwnerHumanID != nil && strings.TrimSpace(*agent.OwnerHumanID) != "" {
-			row["owner_human_id"] = *agent.OwnerHumanID
+		agents[key] = map[string]any{
+			"id":       agent.AgentUUID,
+			"metadata": entityMetadataForRender(agent.Metadata),
 		}
-		if metadata := snapshotMetadataPublicView(agent.Metadata); len(metadata) > 0 {
-			row["metadata"] = metadata
-		}
-		agents = append(agents, row)
 	}
-	sort.Slice(agents, func(i, j int) bool {
-		agentI := fmt.Sprintf("%v", agents[i]["agent_id"])
-		agentJ := fmt.Sprintf("%v", agents[j]["agent_id"])
-		if agentI != agentJ {
-			return agentI < agentJ
-		}
-		return fmt.Sprintf("%v", agents[i]["org_id"]) < fmt.Sprintf("%v", agents[j]["org_id"])
-	})
 
 	entities := map[string]any{}
-	if len(organizations) > 0 {
+	if len(organizations) != 0 {
 		entities["organizations"] = organizations
 	}
-	if len(humans) > 0 {
+	if len(humans) != 0 {
 		entities["humans"] = humans
 	}
-	if len(agents) > 0 {
+	if len(agents) != 0 {
 		entities["agents"] = agents
 	}
 
