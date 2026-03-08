@@ -161,6 +161,18 @@ func hasUIConfigPrivilegedAccess(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(presentedKey), []byte(expectedKey)) == 1
 }
 
+func hasEntitiesMetadataAccess(r *http.Request) bool {
+	expectedKey := strings.TrimSpace(os.Getenv("STATOCYST_ENTITIES_METADATA_KEY"))
+	if expectedKey == "" {
+		return false
+	}
+	presentedKey := strings.TrimSpace(r.Header.Get("X-Entities-Metadata-Key"))
+	if presentedKey == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(presentedKey), []byte(expectedKey)) == 1
+}
+
 func (h *Handler) hasAdminSnapshotKeyAccess(r *http.Request) bool {
 	expectedKey := strings.TrimSpace(h.adminSnapshotKey)
 	if expectedKey == "" {
@@ -1046,6 +1058,111 @@ func snapshotMetadataPublicView(metadata map[string]any) map[string]any {
 		}
 	}
 	return out
+}
+
+func (h *Handler) handleEntitiesMetadata(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+	if !hasEntitiesMetadataAccess(r) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid entities metadata key")
+		return
+	}
+
+	publicFilter := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("public")))
+	if publicFilter != "true" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "query parameter public=true is required")
+		return
+	}
+
+	admin := h.control.AdminSnapshot()
+
+	organizations := make([]map[string]any, 0)
+	for _, org := range admin.Organizations {
+		if !metadataPublicOrDefault(org.Metadata) {
+			continue
+		}
+		row := map[string]any{
+			"org_id":       org.OrgID,
+			"handle":       org.Handle,
+			"display_name": org.DisplayName,
+		}
+		if metadata := snapshotMetadataPublicView(org.Metadata); len(metadata) > 0 {
+			row["metadata"] = metadata
+		}
+		organizations = append(organizations, row)
+	}
+	sort.Slice(organizations, func(i, j int) bool {
+		return fmt.Sprintf("%v", organizations[i]["handle"]) < fmt.Sprintf("%v", organizations[j]["handle"])
+	})
+
+	humans := make([]map[string]any, 0)
+	for _, human := range admin.Humans {
+		if !metadataPublicOrDefault(human.Metadata) {
+			continue
+		}
+		row := map[string]any{
+			"human_id": human.HumanID,
+			"handle":   human.Handle,
+		}
+		if metadata := snapshotMetadataPublicView(human.Metadata); len(metadata) > 0 {
+			row["metadata"] = metadata
+		}
+		humans = append(humans, row)
+	}
+	sort.Slice(humans, func(i, j int) bool {
+		return fmt.Sprintf("%v", humans[i]["handle"]) < fmt.Sprintf("%v", humans[j]["handle"])
+	})
+
+	agents := make([]map[string]any, 0)
+	for _, agent := range admin.Agents {
+		if !metadataPublicOrDefault(agent.Metadata) {
+			continue
+		}
+		row := map[string]any{
+			"agent_uuid": agent.AgentUUID,
+			"agent_id":   agent.AgentID,
+			"org_id":     agent.OrgID,
+			"status":     agent.Status,
+		}
+		if agent.OwnerHumanID != nil && strings.TrimSpace(*agent.OwnerHumanID) != "" {
+			row["owner_human_id"] = *agent.OwnerHumanID
+		}
+		if metadata := snapshotMetadataPublicView(agent.Metadata); len(metadata) > 0 {
+			row["metadata"] = metadata
+		}
+		agents = append(agents, row)
+	}
+	sort.Slice(agents, func(i, j int) bool {
+		agentI := fmt.Sprintf("%v", agents[i]["agent_id"])
+		agentJ := fmt.Sprintf("%v", agents[j]["agent_id"])
+		if agentI != agentJ {
+			return agentI < agentJ
+		}
+		return fmt.Sprintf("%v", agents[i]["org_id"]) < fmt.Sprintf("%v", agents[j]["org_id"])
+	})
+
+	entities := map[string]any{}
+	if len(organizations) > 0 {
+		entities["organizations"] = organizations
+	}
+	if len(humans) > 0 {
+		entities["humans"] = humans
+	}
+	if len(agents) > 0 {
+		entities["agents"] = agents
+	}
+
+	response := map[string]any{
+		"generated_at": h.now().UTC().Format(time.RFC3339Nano),
+		"filters": map[string]any{
+			"public": true,
+		},
+		"entities": entities,
+	}
+
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *Handler) handlePublicSnapshot(w http.ResponseWriter, r *http.Request) {

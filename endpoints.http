@@ -1,5 +1,5 @@
 @baseUrl = http://localhost:8080
-@adminSnapshotKey = local-snapshot-key
+@entitiesMetadataKey = local-entities-metadata-key
 
 @aliceHumanId = alice
 @aliceHumanEmail = alice@a.test
@@ -28,15 +28,10 @@ GET {{baseUrl}}/openapi.yaml
 GET {{baseUrl}}/v1/ui/config
 
 ###
-# Caller: Public
-# @name public_snapshot
-GET {{baseUrl}}/v1/public/snapshot
-
-###
-# Caller: Human (admin key machine context)
-# @name admin_snapshot
-GET {{baseUrl}}/v1/admin/snapshot
-X-Admin-Snapshot-Key: {{adminSnapshotKey}}
+# Caller: System (entities metadata key)
+# @name entities_public_metadata
+GET {{baseUrl}}/v1/entities/metadata?public=true
+X-Entities-Metadata-Key: {{entitiesMetadataKey}}
 
 ###
 # Caller: Human (Alice)

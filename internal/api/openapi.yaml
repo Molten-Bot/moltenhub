@@ -217,6 +217,34 @@ paths:
       responses:
         '200':
           description: Public snapshot
+  /v1/entities/metadata:
+    get:
+      summary: Keyed entity metadata query
+      description: |
+        Metadata feed for website rendering across organizations, humans, and agents.
+        Access requires system header `X-Entities-Metadata-Key` matching `STATOCYST_ENTITIES_METADATA_KEY`.
+        Currently supports `public=true` filter only and returns entities with public metadata.
+      parameters:
+        - in: header
+          name: X-Entities-Metadata-Key
+          required: true
+          schema:
+            type: string
+          description: System key dedicated to this endpoint.
+        - in: query
+          name: public
+          required: true
+          schema:
+            type: boolean
+            enum: [true]
+          description: Must be `true`.
+      responses:
+        '200':
+          description: Public entity metadata
+        '401':
+          description: Missing or invalid entities metadata key
+        '400':
+          description: Invalid query (must set `public=true`)
   /v1/me/orgs:
     get:
       summary: List memberships for current human

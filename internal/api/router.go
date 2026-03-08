@@ -99,6 +99,7 @@ func NewRouter(handler *Handler) http.Handler {
 	mux.HandleFunc("/v1/me/agents/bind-tokens", handler.handleMyAgentBindTokens)
 	mux.HandleFunc("/v1/me/agent-trusts", handler.handleMyAgentTrusts)
 	mux.HandleFunc("/v1/admin/snapshot", handler.handleAdminSnapshot)
+	mux.HandleFunc("/v1/entities/metadata", handler.handleEntitiesMetadata)
 	mux.HandleFunc("/v1/public/snapshot", handler.handlePublicSnapshot)
 	mux.HandleFunc("/v1/orgs", handler.handleOrgs)
 	mux.HandleFunc("/v1/orgs/", handler.handleOrgSubroutes)
