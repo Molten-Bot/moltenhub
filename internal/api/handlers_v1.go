@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -74,6 +77,30 @@ type trustAgentRequest struct {
 	PeerAgentUUID string `json:"peer_agent_uuid"`
 	AgentID       string `json:"agent_id,omitempty"`
 	PeerAgentID   string `json:"peer_agent_id,omitempty"`
+}
+
+var agentConnectPromptLines = []string{
+	"Connect to MoltenBot Hub as my agent.",
+	"Hub URL: {{hub_url}}",
+	"Bind API URL: {{bind_api_url}}",
+	"Agent Skill URL After Bind: {{skill_url}}",
+	"Bind Scope: {{bind_scope}}",
+	"Expires: {{expires_at}}",
+	"",
+	"Authorization:",
+	"I authorize exactly one bind action with this one-time token.",
+	"Do not perform unrelated actions.",
+	"",
+	"Use this one-time bind token exactly once:",
+	"{{bind_token}}",
+	"",
+	"Steps:",
+	"1. Redeem the bind token with:",
+	"   curl -fsS -X POST {{bind_api_url}} -H \"Content-Type: application/json\" -d '{\"hub_url\":\"{{hub_url}}\",\"bind_token\":\"{{bind_token}}\"}'",
+	"2. Persist the returned bearer `token`, exact `api_base`, and `endpoints` exactly as returned.",
+	"3. Do not substitute localhost, container-only hosts, or a different environment hostname.",
+	"4. Immediately call `GET {api_base}/agents/me/skill` with `Authorization: Bearer <token>` and follow that skill exactly once to finish onboarding.",
+	"5. Treat both the bind token and returned bearer token as secrets.",
 }
 
 type createOrgAccessKeyRequest struct {
@@ -535,7 +562,7 @@ func (h *Handler) handleMyAgentBindTokens(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"bind_id":        bind.BindID,
 		"bind_token":     bindSecret,
-		"connect_prompt": buildAgentConnectPrompt(r, bind, bindSecret),
+		"connect_prompt": h.buildAgentConnectPrompt(r, bind, bindSecret),
 		"org_id":         bind.OrgID,
 		"owner_human_id": bind.OwnerHumanID,
 		"expires_at":     bind.ExpiresAt,
@@ -931,7 +958,7 @@ func (h *Handler) buildAgentControlPlane(r *http.Request, agent model.Agent) (ag
 		ownerHumanID = *agent.OwnerHumanID
 	}
 	return agentControlPlaneView{
-		APIBase:      apiBaseURL(r),
+		APIBase:      h.apiBaseURL(r),
 		AgentUUID:    agent.AgentUUID,
 		AgentID:      agent.AgentID,
 		OrgID:        agent.OrgID,
@@ -971,27 +998,47 @@ func (h *Handler) agentControlPlanePayload(cp agentControlPlaneView) map[string]
 	}
 }
 
-func apiBaseURL(r *http.Request) string {
-	scheme := "http"
-	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwarded != "" {
-		parts := strings.Split(forwarded, ",")
-		candidate := strings.ToLower(strings.TrimSpace(parts[0]))
-		if candidate == "http" || candidate == "https" {
-			scheme = candidate
-		}
-	} else if r.TLS != nil {
-		scheme = "https"
-	}
-
-	host := strings.TrimSpace(r.Host)
-	if host == "" {
-		host = "localhost:8080"
-	}
-	return fmt.Sprintf("%s://%s/v1", scheme, host)
+func splitForwardedHeader(value string) string {
+	parts := strings.Split(value, ",")
+	return strings.TrimSpace(parts[0])
 }
 
-func hubBaseURL(r *http.Request) string {
-	return strings.TrimSuffix(apiBaseURL(r), "/v1")
+func canonicalURLParts(baseURL string) (string, string) {
+	if strings.TrimSpace(baseURL) == "" {
+		return "", ""
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(parsed.Scheme), strings.TrimSpace(parsed.Host)
+}
+
+func normalizeHostOnly(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		return strings.Trim(parsedHost, "[]")
+	}
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		return strings.Trim(host, "[]")
+	}
+	return host
+}
+
+func isLoopbackOrLocalHost(host string) bool {
+	normalized := strings.ToLower(normalizeHostOnly(host))
+	switch normalized {
+	case "", "localhost":
+		return true
+	}
+	addr, err := netip.ParseAddr(normalized)
+	if err != nil {
+		return false
+	}
+	return addr.IsLoopback() || addr.IsUnspecified()
 }
 
 func bindScopeLabel(bind model.BindToken) string {
@@ -1001,32 +1048,56 @@ func bindScopeLabel(bind model.BindToken) string {
 	return "Organization " + strings.TrimSpace(bind.OrgID)
 }
 
-func buildAgentConnectPrompt(r *http.Request, bind model.BindToken, bindToken string) string {
-	apiBase := apiBaseURL(r)
-	hubBase := hubBaseURL(r)
-	bindURL := apiBase + "/agents/bind"
-	skillURL := apiBase + "/agents/me/skill"
+func (h *Handler) baseURL(r *http.Request) string {
+	canonicalScheme, canonicalHost := canonicalURLParts(h.canonicalBaseURL)
+	host := splitForwardedHeader(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = strings.TrimSpace(r.Host)
+	}
+	if (host == "" || isLoopbackOrLocalHost(host)) && canonicalHost != "" {
+		host = canonicalHost
+	}
+	if host == "" {
+		host = "localhost:8080"
+	}
 
-	var b strings.Builder
-	b.WriteString("Connect to MoltenBot Hub as my agent.\n")
-	b.WriteString("Hub URL: " + hubBase + "\n")
-	b.WriteString("Bind API URL: " + bindURL + "\n")
-	b.WriteString("Agent Skill URL After Bind: " + skillURL + "\n")
-	b.WriteString("Bind Scope: " + bindScopeLabel(bind) + "\n")
-	b.WriteString("Expires: " + bind.ExpiresAt.UTC().Format(time.RFC3339) + "\n\n")
-	b.WriteString("Authorization:\n")
-	b.WriteString("I authorize exactly one bind action with this one-time token.\n")
-	b.WriteString("Do not perform unrelated actions.\n\n")
-	b.WriteString("Use this one-time bind token exactly once:\n")
-	b.WriteString(bindToken + "\n\n")
-	b.WriteString("Steps:\n")
-	b.WriteString("1. Redeem the bind token with:\n")
-	b.WriteString("   curl -fsS -X POST " + bindURL + " -H \"Content-Type: application/json\" -d '{\"hub_url\":\"" + hubBase + "\",\"bind_token\":\"" + bindToken + "\"}'\n")
-	b.WriteString("2. Persist the returned bearer `token`, exact `api_base`, and `endpoints` exactly as returned.\n")
-	b.WriteString("3. Do not substitute localhost, container-only hosts, or a different environment hostname.\n")
-	b.WriteString("4. Immediately call `GET {api_base}/agents/me/skill` with `Authorization: Bearer <token>` and follow that skill exactly once to finish onboarding.\n")
-	b.WriteString("5. Treat both the bind token and returned bearer token as secrets.\n")
-	return b.String()
+	scheme := strings.ToLower(splitForwardedHeader(r.Header.Get("X-Forwarded-Proto")))
+	if scheme != "http" && scheme != "https" {
+		scheme = ""
+	}
+	if scheme == "" && canonicalHost != "" && strings.EqualFold(host, canonicalHost) && canonicalScheme != "" {
+		scheme = canonicalScheme
+	}
+	if scheme == "" {
+		if r.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+	return fmt.Sprintf("%s://%s", scheme, host)
+}
+
+func (h *Handler) apiBaseURL(r *http.Request) string {
+	return h.baseURL(r) + "/v1"
+}
+
+func (h *Handler) hubBaseURL(r *http.Request) string {
+	return h.baseURL(r)
+}
+
+func (h *Handler) buildAgentConnectPrompt(r *http.Request, bind model.BindToken, bindToken string) string {
+	apiBase := h.apiBaseURL(r)
+	hubBase := h.hubBaseURL(r)
+	replacer := strings.NewReplacer(
+		"{{hub_url}}", hubBase,
+		"{{bind_api_url}}", apiBase+"/agents/bind",
+		"{{skill_url}}", apiBase+"/agents/me/skill",
+		"{{bind_scope}}", bindScopeLabel(bind),
+		"{{expires_at}}", bind.ExpiresAt.UTC().Format(time.RFC3339),
+		"{{bind_token}}", bindToken,
+	)
+	return replacer.Replace(strings.Join(agentConnectPromptLines, "\n"))
 }
 
 func wantsMarkdownSkill(r *http.Request) bool {
@@ -2189,7 +2260,7 @@ func (h *Handler) handleCreateBindToken(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"bind_id":        bind.BindID,
 		"bind_token":     bindSecret,
-		"connect_prompt": buildAgentConnectPrompt(r, bind, bindSecret),
+		"connect_prompt": h.buildAgentConnectPrompt(r, bind, bindSecret),
 		"org_id":         bind.OrgID,
 		"owner_human_id": bind.OwnerHumanID,
 		"expires_at":     bind.ExpiresAt,
@@ -2233,7 +2304,7 @@ func (h *Handler) handleRedeemBindToken(w http.ResponseWriter, r *http.Request) 
 
 		agent, err := h.control.RedeemBindToken(bindTokenHash, agentID, auth.HashToken(agentToken), h.now().UTC())
 		if err == nil {
-			apiBase := apiBaseURL(r)
+			apiBase := h.apiBaseURL(r)
 			writeJSON(w, http.StatusCreated, map[string]any{
 				"token":    agentToken,
 				"api_base": apiBase,
