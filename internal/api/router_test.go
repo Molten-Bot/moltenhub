@@ -1131,6 +1131,98 @@ func TestMyAgentBindTokenCreateIncludesConnectPrompt(t *testing.T) {
 	}
 }
 
+func TestMyAgentBindTokenCreateUsesForwardedHostInConnectPrompt(t *testing.T) {
+	router := newTestRouter()
+	ensureHandleConfirmed(t, router, "alice", "alice@a.test")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/me/agents/bind-tokens", bytes.NewReader([]byte(`{}`)))
+	req.Host = "127.0.0.1:8081"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Human-Id", "alice")
+	req.Header.Set("X-Human-Email", "alice@a.test")
+	req.Header.Set("X-Forwarded-Host", "hub.molten-qa.site")
+	req.Header.Set("X-Forwarded-Proto", "https")
+
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("create my bind token failed: %d %s", resp.Code, resp.Body.String())
+	}
+
+	connectPrompt, _ := decodeJSONMap(t, resp.Body.Bytes())["connect_prompt"].(string)
+	if !strings.Contains(connectPrompt, "https://hub.molten-qa.site/v1/agents/bind") {
+		t.Fatalf("expected forwarded bind api url in connect prompt, got %q", connectPrompt)
+	}
+	if !strings.Contains(connectPrompt, "https://hub.molten-qa.site/v1/agents/me/skill") {
+		t.Fatalf("expected forwarded skill url in connect prompt, got %q", connectPrompt)
+	}
+	if strings.Contains(connectPrompt, "127.0.0.1:8081") {
+		t.Fatalf("expected forwarded host to replace loopback host, got %q", connectPrompt)
+	}
+}
+
+func TestMyAgentBindTokenCreateFallsBackToCanonicalBaseWhenHostIsLoopback(t *testing.T) {
+	router := newTestRouter()
+	ensureHandleConfirmed(t, router, "alice", "alice@a.test")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/me/agents/bind-tokens", bytes.NewReader([]byte(`{}`)))
+	req.Host = "127.0.0.1:8081"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Human-Id", "alice")
+	req.Header.Set("X-Human-Email", "alice@a.test")
+
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("create my bind token failed: %d %s", resp.Code, resp.Body.String())
+	}
+
+	connectPrompt, _ := decodeJSONMap(t, resp.Body.Bytes())["connect_prompt"].(string)
+	if !strings.Contains(connectPrompt, "https://hub.molten.bot/v1/agents/bind") {
+		t.Fatalf("expected canonical bind api url in connect prompt, got %q", connectPrompt)
+	}
+	if strings.Contains(connectPrompt, "127.0.0.1:8081") {
+		t.Fatalf("expected canonical base to replace loopback host, got %q", connectPrompt)
+	}
+}
+
+func TestRedeemBindTokenUsesForwardedHostInAPIBase(t *testing.T) {
+	router := newTestRouter()
+	ensureHandleConfirmed(t, router, "alice", "alice@a.test")
+
+	createResp := doJSONRequest(t, router, http.MethodPost, "/v1/me/agents/bind-tokens", map[string]any{}, humanHeaders("alice", "alice@a.test"))
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create my bind token failed: %d %s", createResp.Code, createResp.Body.String())
+	}
+	bindToken, _ := decodeJSONMap(t, createResp.Body.Bytes())["bind_token"].(string)
+	if bindToken == "" {
+		t.Fatalf("bind_token missing")
+	}
+
+	reqBody := bytes.NewReader([]byte(fmt.Sprintf(`{"bind_token":%q}`, bindToken)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/agents/bind", reqBody)
+	req.Host = "127.0.0.1:8081"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-Host", "hub.molten-qa.site")
+	req.Header.Set("X-Forwarded-Proto", "https")
+
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("redeem bind token failed: %d %s", resp.Code, resp.Body.String())
+	}
+
+	payload := decodeJSONMap(t, resp.Body.Bytes())
+	apiBase, _ := payload["api_base"].(string)
+	if apiBase != "https://hub.molten-qa.site/v1" {
+		t.Fatalf("expected forwarded api_base, got %q", apiBase)
+	}
+	endpoints, _ := payload["endpoints"].(map[string]any)
+	if got, _ := endpoints["skill"].(string); got != "https://hub.molten-qa.site/v1/agents/me/skill" {
+		t.Fatalf("expected forwarded skill endpoint, got %q", got)
+	}
+}
+
 func TestTrustLifecycleAndBlockPrecedence(t *testing.T) {
 	router := newTestRouter()
 	_, _, tokenA, _, orgTrustID, _, _, agentUUIDB := setupTrustedAgents(t, router)
