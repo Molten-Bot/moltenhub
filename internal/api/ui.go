@@ -41,6 +41,12 @@ var uiAgentsHTML []byte
 //go:embed ui/agents.js
 var uiAgentsJS []byte
 
+//go:embed ui/robots.txt
+var uiRobotsTXT []byte
+
+//go:embed ui/humans.txt
+var uiHumansTXT []byte
+
 func uiDevModeEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv("STATOCYST_UI_DEV_MODE")), "true")
 }
@@ -48,6 +54,14 @@ func uiDevModeEnabled() bool {
 func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/v1/") || strings.HasPrefix(r.URL.Path, "/health") || strings.HasPrefix(r.URL.Path, "/openapi") || r.URL.Path == "/ping" {
 		writeError(w, http.StatusNotFound, "not_found", "route not found")
+		return
+	}
+	switch r.URL.Path {
+	case "/robots.txt":
+		writeUIAsset(w, r, "text/plain; charset=utf-8", uiRobotsTXT, "robots.txt")
+		return
+	case "/humans.txt":
+		writeUIAsset(w, r, "text/plain; charset=utf-8", uiHumansTXT, "humans.txt")
 		return
 	}
 	if h.headlessMode {

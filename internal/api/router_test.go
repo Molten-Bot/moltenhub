@@ -2761,6 +2761,38 @@ func TestHeadlessModeKeepsPingAvailableWhenRedirectConfigured(t *testing.T) {
 	}
 }
 
+func TestHeadlessModeServesRobotsAndHumansWhenRedirectConfigured(t *testing.T) {
+	st := store.NewMemoryStore()
+	waiters := longpoll.NewWaiters()
+	h := NewHandler(st, st, waiters, auth.NewDevHumanAuthProvider(), "https://hub.molten.bot", "", "", "", "", "molten.bot", true, 15*time.Minute, true)
+	h.SetHeadlessModeRedirectURL("https://example.com/headless")
+	router := NewRouter(h)
+
+	tests := []struct {
+		path string
+		body string
+	}{
+		{path: "/robots.txt", body: "User-agent: *\nDisallow: /\n"},
+		{path: "/humans.txt", body: "https://github.com/jefking\n"},
+	}
+
+	for _, tc := range tests {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		resp := httptest.NewRecorder()
+		router.ServeHTTP(resp, req)
+
+		if resp.Code != http.StatusOK {
+			t.Fatalf("%s expected 200, got %d body=%s", tc.path, resp.Code, resp.Body.String())
+		}
+		if location := resp.Header().Get("Location"); location != "" {
+			t.Fatalf("%s expected no redirect, got location %q", tc.path, location)
+		}
+		if resp.Body.String() != tc.body {
+			t.Fatalf("%s expected body %q, got %q", tc.path, tc.body, resp.Body.String())
+		}
+	}
+}
+
 func TestOnboardingBlocksWritesUntilHandleConfirmed(t *testing.T) {
 	router := newTestRouter()
 
