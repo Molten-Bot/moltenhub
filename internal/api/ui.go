@@ -46,7 +46,7 @@ func uiDevModeEnabled() bool {
 }
 
 func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/v1/") || strings.HasPrefix(r.URL.Path, "/health") || strings.HasPrefix(r.URL.Path, "/openapi") {
+	if strings.HasPrefix(r.URL.Path, "/v1/") || strings.HasPrefix(r.URL.Path, "/health") || strings.HasPrefix(r.URL.Path, "/openapi") || r.URL.Path == "/ping" {
 		writeError(w, http.StatusNotFound, "not_found", "route not found")
 		return
 	}
