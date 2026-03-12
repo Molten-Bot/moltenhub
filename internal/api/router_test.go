@@ -2742,6 +2742,25 @@ func TestHeadlessModeRedirectsUIRoutesWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestHeadlessModeKeepsPingAvailableWhenRedirectConfigured(t *testing.T) {
+	st := store.NewMemoryStore()
+	waiters := longpoll.NewWaiters()
+	h := NewHandler(st, st, waiters, auth.NewDevHumanAuthProvider(), "https://hub.molten.bot", "", "", "", "", "molten.bot", true, 15*time.Minute, true)
+	h.SetHeadlessModeRedirectURL("https://example.com/headless")
+	router := NewRouter(h)
+
+	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("expected /ping to remain 204 in headless redirect mode, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if location := resp.Header().Get("Location"); location != "" {
+		t.Fatalf("expected /ping to avoid redirects, got location %q", location)
+	}
+}
+
 func TestOnboardingBlocksWritesUntilHandleConfirmed(t *testing.T) {
 	router := newTestRouter()
 
