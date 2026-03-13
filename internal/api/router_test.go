@@ -2299,12 +2299,32 @@ func TestAgentMeMetadataUpdateEndpoint(t *testing.T) {
 	if metadata["public"] != false {
 		t.Fatalf("expected PATCH /v1/agents/me/metadata to set metadata.public=false, got %v payload=%v", metadata["public"], patchPayload)
 	}
+	if metadata["agent_type"] != "unknown" {
+		t.Fatalf("expected PATCH /v1/agents/me/metadata to default metadata.agent_type=unknown, got %v payload=%v", metadata["agent_type"], patchPayload)
+	}
 
 	humanRouteResp := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/"+agentUUIDB+"/metadata", map[string]any{
 		"metadata": map[string]any{"public": false},
 	}, headers)
 	if humanRouteResp.Code != http.StatusUnauthorized {
 		t.Fatalf("expected agent token on human control-plane route to return 401, got %d %s", humanRouteResp.Code, humanRouteResp.Body.String())
+	}
+}
+
+func TestAgentMeMetadataRejectsInvalidAgentType(t *testing.T) {
+	router := newTestRouter()
+	_, _, tokenA, _, _, _, _, _ := setupTrustedAgents(t, router)
+	headers := map[string]string{"Authorization": "Bearer " + tokenA}
+
+	resp := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/me/metadata", map[string]any{
+		"metadata": map[string]any{"agent_type": "bad type!"},
+	}, headers)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid agent_type to return 400, got %d %s", resp.Code, resp.Body.String())
+	}
+	payload := decodeJSONMap(t, resp.Body.Bytes())
+	if payload["error"] != "invalid_agent_type" {
+		t.Fatalf("expected invalid_agent_type error, got %v payload=%v", payload["error"], payload)
 	}
 }
 
@@ -2439,6 +2459,142 @@ func TestAdminSnapshotDoesNotLeakMessagePayloads(t *testing.T) {
 	bodyText := snap.Body.String()
 	if strings.Contains(bodyText, secretPayload) || strings.Contains(bodyText, "\"payload\"") {
 		t.Fatalf("snapshot should not include message payload data: %s", bodyText)
+	}
+}
+
+func TestAdminSnapshotIncludesMessageRollups(t *testing.T) {
+	router := newTestRouter()
+	orgA, orgB, tokenA, tokenB, _, _, agentUUIDA, agentUUIDB := setupTrustedAgents(t, router)
+	aliceHumanID := currentHumanID(t, router, "alice", "alice@a.test")
+	bobHumanID := currentHumanID(t, router, "bob", "bob@b.test")
+
+	typePatchA := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/me/metadata", map[string]any{
+		"metadata": map[string]any{"agent_type": "CoDeX"},
+	}, map[string]string{"Authorization": "Bearer " + tokenA})
+	if typePatchA.Code != http.StatusOK {
+		t.Fatalf("expected agent A metadata patch 200, got %d %s", typePatchA.Code, typePatchA.Body.String())
+	}
+	typePatchB := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/me/metadata", map[string]any{
+		"metadata": map[string]any{"agent_type": "Claude"},
+	}, map[string]string{"Authorization": "Bearer " + tokenB})
+	if typePatchB.Code != http.StatusOK {
+		t.Fatalf("expected agent B metadata patch 200, got %d %s", typePatchB.Code, typePatchB.Body.String())
+	}
+
+	pub := publish(t, router, tokenA, agentUUIDB, "hello-rollup")
+	if pub.Code != http.StatusAccepted {
+		t.Fatalf("publish failed: %d %s", pub.Code, pub.Body.String())
+	}
+	pubPayload := decodeJSONMap(t, pub.Body.Bytes())
+	messageID, _ := pubPayload["message_id"].(string)
+	if messageID == "" {
+		t.Fatalf("expected publish response to include message_id")
+	}
+
+	pullResp := pull(t, router, tokenB, 0)
+	if pullResp.Code != http.StatusOK {
+		t.Fatalf("pull failed: %d %s", pullResp.Code, pullResp.Body.String())
+	}
+
+	snap := doJSONRequest(t, router, http.MethodGet, "/v1/admin/snapshot", nil, humanHeaders("root", "root@molten.bot"))
+	if snap.Code != http.StatusOK {
+		t.Fatalf("snapshot failed: %d %s", snap.Code, snap.Body.String())
+	}
+	payload := decodeJSONMap(t, snap.Body.Bytes())
+	snapshot, _ := payload["snapshot"].(map[string]any)
+	metrics, _ := snapshot["message_metrics"].(map[string]any)
+	if metrics == nil {
+		t.Fatalf("expected snapshot.message_metrics in admin snapshot payload=%v", payload)
+	}
+
+	agents, _ := metrics["agents"].([]any)
+	if len(agents) == 0 {
+		t.Fatalf("expected message_metrics.agents to be non-empty")
+	}
+	var metricA map[string]any
+	var metricB map[string]any
+	for _, raw := range agents {
+		row, _ := raw.(map[string]any)
+		if row["agent_uuid"] == agentUUIDA {
+			metricA = row
+		}
+		if row["agent_uuid"] == agentUUIDB {
+			metricB = row
+		}
+	}
+	if metricA == nil || metricB == nil {
+		t.Fatalf("expected agent metrics for both trusted agents, got metrics=%v", agents)
+	}
+	if metricA["outbox_messages"] != float64(1) || metricA["inbox_messages"] != float64(0) {
+		t.Fatalf("expected agent A outbox=1 inbox=0, got %v", metricA)
+	}
+	if metricB["outbox_messages"] != float64(0) || metricB["inbox_messages"] != float64(1) {
+		t.Fatalf("expected agent B outbox=0 inbox=1, got %v", metricB)
+	}
+	archiveA, _ := metricA["archive"].(map[string]any)
+	fromA, _ := archiveA["from"].([]any)
+	if len(fromA) != 1 {
+		t.Fatalf("expected agent A archive.from len=1, got %d archive=%v", len(fromA), archiveA)
+	}
+	fromAEntry, _ := fromA[0].(map[string]any)
+	if fromAEntry["message_id"] != messageID {
+		t.Fatalf("expected agent A archive.from message_id=%q, got %v", messageID, fromAEntry["message_id"])
+	}
+	if _, hasPayload := fromAEntry["payload"]; hasPayload {
+		t.Fatalf("agent archive entry should not expose payload: %v", fromAEntry)
+	}
+	if metricA["agent_type"] != "codex" {
+		t.Fatalf("expected normalized agent_type codex for agent A, got %v", metricA["agent_type"])
+	}
+	if metricB["agent_type"] != "claude" {
+		t.Fatalf("expected normalized agent_type claude for agent B, got %v", metricB["agent_type"])
+	}
+
+	humans, _ := metrics["humans"].([]any)
+	if len(humans) == 0 {
+		t.Fatalf("expected message_metrics.humans to be non-empty")
+	}
+	var aliceMetrics map[string]any
+	var bobMetrics map[string]any
+	for _, raw := range humans {
+		row, _ := raw.(map[string]any)
+		if row["human_id"] == aliceHumanID {
+			aliceMetrics = row
+		}
+		if row["human_id"] == bobHumanID {
+			bobMetrics = row
+		}
+	}
+	if aliceMetrics == nil || bobMetrics == nil {
+		t.Fatalf("expected human rollups for alice and bob, got %v", humans)
+	}
+	if aliceMetrics["linked_agents"] != float64(1) || aliceMetrics["outbox_messages"] != float64(1) {
+		t.Fatalf("unexpected alice human rollup: %v", aliceMetrics)
+	}
+	if bobMetrics["linked_agents"] != float64(1) || bobMetrics["inbox_messages"] != float64(1) {
+		t.Fatalf("unexpected bob human rollup: %v", bobMetrics)
+	}
+
+	orgs, _ := metrics["organizations"].([]any)
+	if len(orgs) == 0 {
+		t.Fatalf("expected message_metrics.organizations to be non-empty")
+	}
+	var orgAMetrics map[string]any
+	var orgBMetrics map[string]any
+	for _, raw := range orgs {
+		row, _ := raw.(map[string]any)
+		if row["org_id"] == orgA {
+			orgAMetrics = row
+		}
+		if row["org_id"] == orgB {
+			orgBMetrics = row
+		}
+	}
+	if orgAMetrics == nil || orgBMetrics == nil {
+		t.Fatalf("expected org rollups for orgA/orgB, got %v", orgs)
+	}
+	if orgAMetrics["outbox_messages"] != float64(1) || orgBMetrics["inbox_messages"] != float64(1) {
+		t.Fatalf("unexpected org rollups: orgA=%v orgB=%v", orgAMetrics, orgBMetrics)
 	}
 }
 

@@ -575,3 +575,215 @@ func TestMemoryStoreFinalizeAgentHandleSelfOnce(t *testing.T) {
 		t.Fatalf("expected duplicate finalized handle in same scope to fail with ErrAgentExists, got %v", err)
 	}
 }
+
+func TestMemoryStoreAgentMetadataNormalizesAgentType(t *testing.T) {
+	now := time.Date(2026, 3, 9, 0, 0, 0, 0, time.UTC)
+	ids := &seqID{}
+	mem := NewMemoryStore()
+
+	alice := mustCreateHuman(t, mem, ids, "alice", "alice@a.test", "alice", now)
+	org := mustCreateOrg(t, mem, ids, alice, "org-a", "Org A", now)
+	agent, err := mem.RegisterAgent(org.OrgID, "agent-a", &alice.HumanID, "tok-a", alice.HumanID, now, false)
+	if err != nil {
+		t.Fatalf("register agent failed: %v", err)
+	}
+	if got := agentTypeFromMetadata(agent.Metadata); got != model.AgentTypeUnknown {
+		t.Fatalf("expected default agent_type=%q, got %q", model.AgentTypeUnknown, got)
+	}
+
+	updated, err := mem.UpdateAgentMetadataSelf(agent.AgentUUID, map[string]any{
+		"agent_type": "CoDeX",
+		"public":     true,
+	}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("UpdateAgentMetadataSelf valid agent_type failed: %v", err)
+	}
+	if got := updated.Metadata[model.AgentMetadataKeyType]; got != "codex" {
+		t.Fatalf("expected normalized metadata.agent_type=codex, got %v", got)
+	}
+	if got := updated.Metadata["public"]; got != true {
+		t.Fatalf("expected metadata.public=true, got %v", got)
+	}
+
+	unknownType, err := mem.UpdateAgentMetadataSelf(agent.AgentUUID, map[string]any{
+		"public": false,
+	}, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("UpdateAgentMetadataSelf without agent_type failed: %v", err)
+	}
+	if got := unknownType.Metadata[model.AgentMetadataKeyType]; got != model.AgentTypeUnknown {
+		t.Fatalf("expected missing agent_type to default to %q, got %v", model.AgentTypeUnknown, got)
+	}
+
+	if _, err := mem.UpdateAgentMetadataSelf(agent.AgentUUID, map[string]any{
+		"agent_type": "bad type!",
+	}, now.Add(3*time.Minute)); !errors.Is(err, ErrInvalidAgentType) {
+		t.Fatalf("expected invalid agent_type to fail with ErrInvalidAgentType, got %v", err)
+	}
+	if _, err := mem.UpdateAgentMetadata(agent.AgentUUID, map[string]any{
+		"agent_type": 42,
+	}, alice.HumanID, now.Add(4*time.Minute), false); !errors.Is(err, ErrInvalidAgentType) {
+		t.Fatalf("expected non-string agent_type to fail with ErrInvalidAgentType, got %v", err)
+	}
+}
+
+func TestMemoryStoreAdminSnapshotMessageMetricsArchivesAndRollups(t *testing.T) {
+	now := time.Date(2026, 3, 9, 12, 0, 0, 0, time.UTC)
+	ids := &seqID{}
+	mem := NewMemoryStore()
+
+	alice := mustCreateHuman(t, mem, ids, "alice", "alice@a.test", "alice", now)
+	bob := mustCreateHuman(t, mem, ids, "bob", "bob@b.test", "bob", now)
+	orgA := mustCreateOrg(t, mem, ids, alice, "org-a", "Org A", now)
+	orgB := mustCreateOrg(t, mem, ids, bob, "org-b", "Org B", now)
+
+	agentA, err := mem.RegisterAgent(orgA.OrgID, "agent-a", &alice.HumanID, "tok-a", alice.HumanID, now, false)
+	if err != nil {
+		t.Fatalf("register agent A failed: %v", err)
+	}
+	agentB, err := mem.RegisterAgent(orgB.OrgID, "agent-b", &bob.HumanID, "tok-b", bob.HumanID, now, false)
+	if err != nil {
+		t.Fatalf("register agent B failed: %v", err)
+	}
+	agentOrg, err := mem.RegisterAgent(orgA.OrgID, "org-agent", nil, "tok-org", alice.HumanID, now, false)
+	if err != nil {
+		t.Fatalf("register org-owned agent failed: %v", err)
+	}
+	if _, err := mem.UpdateAgentMetadataSelf(agentA.AgentUUID, map[string]any{"agent_type": "codex"}, now.Add(10*time.Second)); err != nil {
+		t.Fatalf("set agent A type failed: %v", err)
+	}
+	if _, err := mem.UpdateAgentMetadataSelf(agentB.AgentUUID, map[string]any{"agent_type": "claude"}, now.Add(11*time.Second)); err != nil {
+		t.Fatalf("set agent B type failed: %v", err)
+	}
+	if _, err := mem.UpdateAgentMetadataSelf(agentOrg.AgentUUID, map[string]any{"agent_type": "openclaw"}, now.Add(12*time.Second)); err != nil {
+		t.Fatalf("set org-owned agent type failed: %v", err)
+	}
+
+	msgAB := model.Message{
+		MessageID:     "msg-a-b",
+		FromAgentUUID: agentA.AgentUUID,
+		ToAgentUUID:   agentB.AgentUUID,
+		FromAgentID:   agentA.AgentID,
+		ToAgentID:     agentB.AgentID,
+		SenderOrgID:   orgA.OrgID,
+		ReceiverOrgID: orgB.OrgID,
+		ContentType:   "text/plain",
+		Payload:       "secret-ab",
+		CreatedAt:     now.Add(time.Minute),
+	}
+	if _, replay, err := mem.CreateOrGetMessageRecord(msgAB, msgAB.CreatedAt); err != nil || replay {
+		t.Fatalf("CreateOrGetMessageRecord(msgAB) failed: replay=%v err=%v", replay, err)
+	}
+	deliveryAB1, _, err := mem.LeaseMessage(msgAB.MessageID, agentB.AgentUUID, "delivery-ab-1", now.Add(61*time.Second), now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("LeaseMessage first msgAB failed: %v", err)
+	}
+	if _, _, err := mem.ReleaseMessageDelivery(agentB.AgentUUID, deliveryAB1.DeliveryID, now.Add(62*time.Second), "receiver_nack"); err != nil {
+		t.Fatalf("ReleaseMessageDelivery msgAB failed: %v", err)
+	}
+	if _, _, err := mem.LeaseMessage(msgAB.MessageID, agentB.AgentUUID, "delivery-ab-2", now.Add(63*time.Second), now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("LeaseMessage second msgAB failed: %v", err)
+	}
+
+	msgBA := model.Message{
+		MessageID:     "msg-b-a",
+		FromAgentUUID: agentB.AgentUUID,
+		ToAgentUUID:   agentA.AgentUUID,
+		FromAgentID:   agentB.AgentID,
+		ToAgentID:     agentA.AgentID,
+		SenderOrgID:   orgB.OrgID,
+		ReceiverOrgID: orgA.OrgID,
+		ContentType:   "application/json",
+		Payload:       "{\"secret\":\"ba\"}",
+		CreatedAt:     now.Add(3 * time.Minute),
+	}
+	if _, replay, err := mem.CreateOrGetMessageRecord(msgBA, msgBA.CreatedAt); err != nil || replay {
+		t.Fatalf("CreateOrGetMessageRecord(msgBA) failed: replay=%v err=%v", replay, err)
+	}
+
+	msgOrgA := model.Message{
+		MessageID:     "msg-org-a",
+		FromAgentUUID: agentOrg.AgentUUID,
+		ToAgentUUID:   agentA.AgentUUID,
+		FromAgentID:   agentOrg.AgentID,
+		ToAgentID:     agentA.AgentID,
+		SenderOrgID:   orgA.OrgID,
+		ReceiverOrgID: orgA.OrgID,
+		ContentType:   "text/plain",
+		Payload:       "secret-org-a",
+		CreatedAt:     now.Add(4 * time.Minute),
+	}
+	if _, replay, err := mem.CreateOrGetMessageRecord(msgOrgA, msgOrgA.CreatedAt); err != nil || replay {
+		t.Fatalf("CreateOrGetMessageRecord(msgOrgA) failed: replay=%v err=%v", replay, err)
+	}
+	if _, _, err := mem.LeaseMessage(msgOrgA.MessageID, agentA.AgentUUID, "delivery-org-a-1", now.Add(5*time.Minute), now.Add(6*time.Minute)); err != nil {
+		t.Fatalf("LeaseMessage msgOrgA failed: %v", err)
+	}
+
+	snapshot := mem.AdminSnapshot()
+	agentMetrics := make(map[string]model.AgentMessageMetrics, len(snapshot.MessageMetrics.Agents))
+	for _, metric := range snapshot.MessageMetrics.Agents {
+		agentMetrics[metric.AgentUUID] = metric
+	}
+	metricA, ok := agentMetrics[agentA.AgentUUID]
+	if !ok {
+		t.Fatalf("expected message metrics for agent A")
+	}
+	if metricA.OutboxMessages != 1 || metricA.InboxMessages != 1 {
+		t.Fatalf("expected agent A outbox=1 inbox=1, got outbox=%d inbox=%d", metricA.OutboxMessages, metricA.InboxMessages)
+	}
+	if len(metricA.Archive.From) != 1 || metricA.Archive.From[0].MessageID != msgAB.MessageID {
+		t.Fatalf("expected agent A from archive to include msgAB, got %+v", metricA.Archive.From)
+	}
+	if len(metricA.Archive.To) != 1 || metricA.Archive.To[0].MessageID != msgOrgA.MessageID {
+		t.Fatalf("expected agent A to archive to include msgOrgA, got %+v", metricA.Archive.To)
+	}
+
+	metricB, ok := agentMetrics[agentB.AgentUUID]
+	if !ok {
+		t.Fatalf("expected message metrics for agent B")
+	}
+	if metricB.OutboxMessages != 1 || metricB.InboxMessages != 1 {
+		t.Fatalf("expected agent B outbox=1 inbox=1, got outbox=%d inbox=%d", metricB.OutboxMessages, metricB.InboxMessages)
+	}
+	if len(metricB.Archive.To) != 1 || metricB.Archive.To[0].MessageID != msgAB.MessageID {
+		t.Fatalf("expected agent B to archive to include msgAB, got %+v", metricB.Archive.To)
+	}
+	if metricB.Archive.To[0].FirstReceivedAt == nil || !metricB.Archive.To[0].FirstReceivedAt.Equal(deliveryAB1.LeasedAt) {
+		t.Fatalf("expected agent B first_received_at=%v, got %+v", deliveryAB1.LeasedAt, metricB.Archive.To[0].FirstReceivedAt)
+	}
+
+	metricOrg, ok := agentMetrics[agentOrg.AgentUUID]
+	if !ok {
+		t.Fatalf("expected message metrics for org-owned agent")
+	}
+	if metricOrg.OutboxMessages != 1 || metricOrg.InboxMessages != 0 {
+		t.Fatalf("expected org-owned agent outbox=1 inbox=0, got outbox=%d inbox=%d", metricOrg.OutboxMessages, metricOrg.InboxMessages)
+	}
+
+	humanMetrics := make(map[string]model.HumanMessageMetrics, len(snapshot.MessageMetrics.Humans))
+	for _, metric := range snapshot.MessageMetrics.Humans {
+		humanMetrics[metric.HumanID] = metric
+	}
+	aliceMetrics := humanMetrics[alice.HumanID]
+	if aliceMetrics.LinkedAgents != 1 || aliceMetrics.OutboxMessages != 1 || aliceMetrics.InboxMessages != 1 {
+		t.Fatalf("expected alice linked=1 outbox=1 inbox=1, got %+v", aliceMetrics)
+	}
+	bobMetrics := humanMetrics[bob.HumanID]
+	if bobMetrics.LinkedAgents != 1 || bobMetrics.OutboxMessages != 1 || bobMetrics.InboxMessages != 1 {
+		t.Fatalf("expected bob linked=1 outbox=1 inbox=1, got %+v", bobMetrics)
+	}
+
+	orgMetrics := make(map[string]model.OrganizationMessageMetrics, len(snapshot.MessageMetrics.Organizations))
+	for _, metric := range snapshot.MessageMetrics.Organizations {
+		orgMetrics[metric.OrgID] = metric
+	}
+	orgAMetrics := orgMetrics[orgA.OrgID]
+	if orgAMetrics.LinkedAgents != 2 || orgAMetrics.OutboxMessages != 2 || orgAMetrics.InboxMessages != 1 {
+		t.Fatalf("expected orgA linked=2 outbox=2 inbox=1, got %+v", orgAMetrics)
+	}
+	orgBMetrics := orgMetrics[orgB.OrgID]
+	if orgBMetrics.LinkedAgents != 1 || orgBMetrics.OutboxMessages != 1 || orgBMetrics.InboxMessages != 1 {
+		t.Fatalf("expected orgB linked=1 outbox=1 inbox=1, got %+v", orgBMetrics)
+	}
+}
