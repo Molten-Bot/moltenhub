@@ -82,6 +82,7 @@ type s3PersistMessageRecord struct {
 	Status            string                `json:"status"`
 	AcceptedAt        time.Time             `json:"accepted_at"`
 	UpdatedAt         time.Time             `json:"updated_at"`
+	FirstReceivedAt   *time.Time            `json:"first_received_at,omitempty"`
 	LastLeasedAt      *time.Time            `json:"last_leased_at,omitempty"`
 	LeaseExpiresAt    *time.Time            `json:"lease_expires_at,omitempty"`
 	AckedAt           *time.Time            `json:"acked_at,omitempty"`
@@ -1365,6 +1366,13 @@ func rebuildStateIndexesLocked(mem *MemoryStore) {
 		mem.orgAccessKeyByHash[key.TokenHash] = keyID
 	}
 	for agentUUID, agent := range mem.agents {
+		normalizedMetadata, err := validateAndNormalizeAgentMetadata(agent.Metadata)
+		if err != nil {
+			normalizedMetadata = defaultAgentMetadata()
+		}
+		agent.Metadata = normalizedMetadata
+		mem.agents[agentUUID] = agent
+
 		if agent.Status == model.StatusRevoked {
 			continue
 		}
@@ -1967,6 +1975,7 @@ func persistMessageRecord(v model.MessageRecord) s3PersistMessageRecord {
 		Status:            v.Status,
 		AcceptedAt:        v.AcceptedAt,
 		UpdatedAt:         v.UpdatedAt,
+		FirstReceivedAt:   v.FirstReceivedAt,
 		LastLeasedAt:      v.LastLeasedAt,
 		LeaseExpiresAt:    v.LeaseExpiresAt,
 		AckedAt:           v.AckedAt,
@@ -1985,6 +1994,7 @@ func (v s3PersistMessageRecord) toModel() model.MessageRecord {
 		Status:            v.Status,
 		AcceptedAt:        v.AcceptedAt,
 		UpdatedAt:         v.UpdatedAt,
+		FirstReceivedAt:   v.FirstReceivedAt,
 		LastLeasedAt:      v.LastLeasedAt,
 		LeaseExpiresAt:    v.LeaseExpiresAt,
 		AckedAt:           v.AckedAt,

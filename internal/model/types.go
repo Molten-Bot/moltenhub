@@ -22,6 +22,9 @@ const (
 	MessageDeliveryAcked  = "acked"
 	MessageDeliveryFailed = "failed"
 	MessageForwarded      = "forwarded"
+
+	AgentMetadataKeyType = "agent_type"
+	AgentTypeUnknown     = "unknown"
 )
 
 type Organization struct {
@@ -165,6 +168,7 @@ type MessageRecord struct {
 	Status            string     `json:"status"`
 	AcceptedAt        time.Time  `json:"accepted_at"`
 	UpdatedAt         time.Time  `json:"updated_at"`
+	FirstReceivedAt   *time.Time `json:"first_received_at,omitempty"`
 	LastLeasedAt      *time.Time `json:"last_leased_at,omitempty"`
 	LeaseExpiresAt    *time.Time `json:"lease_expires_at,omitempty"`
 	AckedAt           *time.Time `json:"acked_at,omitempty"`
@@ -281,4 +285,62 @@ type AdminSnapshot struct {
 	OrgTrusts     []TrustEdge    `json:"org_trusts"`
 	AgentTrusts   []TrustEdge    `json:"agent_trusts"`
 	Stats         []OrgStats     `json:"stats"`
+	MessageMetrics AdminMessageMetrics `json:"message_metrics"`
+}
+
+type MessageArchiveEntry struct {
+	MessageID              string     `json:"message_id"`
+	CounterpartyAgentUUID  string     `json:"counterparty_agent_uuid,omitempty"`
+	CounterpartyAgentID    string     `json:"counterparty_agent_id,omitempty"`
+	CounterpartyAgentURI   string     `json:"counterparty_agent_uri,omitempty"`
+	CounterpartyOrgID      string     `json:"counterparty_org_id,omitempty"`
+	ContentType            string     `json:"content_type"`
+	PublishedAt            time.Time  `json:"published_at"`
+	FirstReceivedAt        *time.Time `json:"first_received_at,omitempty"`
+	Status                 string     `json:"status"`
+}
+
+type AgentMessageArchive struct {
+	From []MessageArchiveEntry `json:"from"`
+	To   []MessageArchiveEntry `json:"to"`
+}
+
+type AgentMessageMetrics struct {
+	AgentUUID      string              `json:"agent_uuid"`
+	AgentID        string              `json:"agent_id"`
+	OrgID          string              `json:"org_id"`
+	OwnerHumanID   *string             `json:"owner_human_id,omitempty"`
+	AgentType      string              `json:"agent_type"`
+	OutboxMessages int64               `json:"outbox_messages"`
+	InboxMessages  int64               `json:"inbox_messages"`
+	Archive        AgentMessageArchive `json:"archive"`
+}
+
+type AgentTypeMessageRollup struct {
+	AgentType      string `json:"agent_type"`
+	AgentCount     int64  `json:"agent_count"`
+	OutboxMessages int64  `json:"outbox_messages"`
+	InboxMessages  int64  `json:"inbox_messages"`
+}
+
+type HumanMessageMetrics struct {
+	HumanID         string                   `json:"human_id"`
+	LinkedAgents    int64                    `json:"linked_agents"`
+	OutboxMessages  int64                    `json:"outbox_messages"`
+	InboxMessages   int64                    `json:"inbox_messages"`
+	AgentTypeTotals []AgentTypeMessageRollup `json:"agent_type_totals"`
+}
+
+type OrganizationMessageMetrics struct {
+	OrgID           string                   `json:"org_id"`
+	LinkedAgents    int64                    `json:"linked_agents"`
+	OutboxMessages  int64                    `json:"outbox_messages"`
+	InboxMessages   int64                    `json:"inbox_messages"`
+	AgentTypeTotals []AgentTypeMessageRollup `json:"agent_type_totals"`
+}
+
+type AdminMessageMetrics struct {
+	Agents        []AgentMessageMetrics        `json:"agents"`
+	Humans        []HumanMessageMetrics        `json:"humans"`
+	Organizations []OrganizationMessageMetrics `json:"organizations"`
 }

@@ -37,6 +37,7 @@ var (
 	ErrAgentAmbiguous           = errors.New("agent reference is ambiguous")
 	ErrAgentHandleLocked        = errors.New("agent handle is already finalized")
 	ErrAgentRevoked             = errors.New("agent revoked")
+	ErrInvalidAgentType         = errors.New("invalid agent type")
 	ErrTrustNotFound            = errors.New("trust edge not found")
 	ErrUnauthorizedRole         = errors.New("unauthorized role")
 	ErrInvalidRole              = errors.New("invalid role")
@@ -1001,7 +1002,7 @@ func (s *MemoryStore) RegisterAgent(orgID, agentID string, ownerHumanID *string,
 		OwnerHumanID:      ownerHumanID,
 		TokenHash:         tokenHash,
 		Status:            model.StatusActive,
-		Metadata:          map[string]any{},
+		Metadata:          defaultAgentMetadata(),
 		CreatedBy:         actorHumanID,
 		CreatedAt:         now,
 	}
@@ -1153,7 +1154,7 @@ func (s *MemoryStore) RedeemBindToken(bindTokenHash, agentID, agentTokenHash str
 		OwnerHumanID:      bind.OwnerHumanID,
 		TokenHash:         agentTokenHash,
 		Status:            model.StatusActive,
-		Metadata:          map[string]any{},
+		Metadata:          defaultAgentMetadata(),
 		CreatedBy:         bind.CreatedBy,
 		CreatedAt:         now,
 	}
@@ -1360,9 +1361,13 @@ func (s *MemoryStore) UpdateAgentMetadata(agentUUID string, metadata map[string]
 	if !isSuperAdmin && !s.canManageAgentLocked(agent, actorHumanID) {
 		return model.Agent{}, ErrUnauthorizedRole
 	}
-	agent.Metadata = copyMetadata(metadata)
+	normalizedMetadata, err := validateAndNormalizeAgentMetadata(metadata)
+	if err != nil {
+		return model.Agent{}, err
+	}
+	agent.Metadata = normalizedMetadata
 	s.agents[agentUUID] = agent
-	summary := metadataAuditSummary(metadata)
+	summary := metadataAuditSummary(agent.Metadata)
 	summary["agent_id"] = agent.AgentID
 	s.appendAuditLocked(agent.OrgID, actorHumanID, "agent", "set_metadata", agentUUID, summary, now)
 	return agent, nil
@@ -1376,9 +1381,13 @@ func (s *MemoryStore) UpdateAgentMetadataSelf(agentUUID string, metadata map[str
 	if !ok || agent.Status == model.StatusRevoked {
 		return model.Agent{}, ErrAgentNotFound
 	}
-	agent.Metadata = copyMetadata(metadata)
+	normalizedMetadata, err := validateAndNormalizeAgentMetadata(metadata)
+	if err != nil {
+		return model.Agent{}, err
+	}
+	agent.Metadata = normalizedMetadata
 	s.agents[agentUUID] = agent
-	summary := metadataAuditSummary(metadata)
+	summary := metadataAuditSummary(agent.Metadata)
 	summary["agent_id"] = agent.AgentID
 	s.appendAuditLocked(agent.OrgID, "", "agent", "set_metadata_self", agentUUID, summary, now)
 	return agent, nil
@@ -1494,6 +1503,68 @@ func copyMetadata(metadata map[string]any) map[string]any {
 		out[key] = value
 	}
 	return out
+}
+
+func defaultAgentMetadata() map[string]any {
+	return map[string]any{
+		model.AgentMetadataKeyType: model.AgentTypeUnknown,
+	}
+}
+
+func validateAndNormalizeAgentMetadata(metadata map[string]any) (map[string]any, error) {
+	normalized := copyMetadata(metadata)
+	rawType, hasType := normalized[model.AgentMetadataKeyType]
+	if !hasType {
+		normalized[model.AgentMetadataKeyType] = model.AgentTypeUnknown
+		return normalized, nil
+	}
+	rawTypeValue, ok := rawType.(string)
+	if !ok {
+		return nil, ErrInvalidAgentType
+	}
+	agentType, ok := normalizeAgentType(rawTypeValue)
+	if !ok {
+		return nil, ErrInvalidAgentType
+	}
+	normalized[model.AgentMetadataKeyType] = agentType
+	return normalized, nil
+}
+
+func agentTypeFromMetadata(metadata map[string]any) string {
+	rawType, ok := metadata[model.AgentMetadataKeyType]
+	if !ok {
+		return model.AgentTypeUnknown
+	}
+	rawTypeValue, ok := rawType.(string)
+	if !ok {
+		return model.AgentTypeUnknown
+	}
+	return normalizeAgentTypeOrUnknown(rawTypeValue)
+}
+
+func normalizeAgentTypeOrUnknown(raw string) string {
+	normalized, ok := normalizeAgentType(raw)
+	if !ok {
+		return model.AgentTypeUnknown
+	}
+	return normalized
+}
+
+func normalizeAgentType(raw string) (string, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(raw))
+	if len(normalized) < 2 || len(normalized) > 64 {
+		return "", false
+	}
+	for _, ch := range normalized {
+		switch {
+		case ch >= 'a' && ch <= 'z':
+		case ch >= '0' && ch <= '9':
+		case ch == '-', ch == '_', ch == '.':
+		default:
+			return "", false
+		}
+	}
+	return normalized, true
 }
 
 func (s *MemoryStore) AgentUUIDForTokenHash(tokenHash string) (string, error) {
@@ -2141,6 +2212,11 @@ func (s *MemoryStore) AdminSnapshot() model.AdminSnapshot {
 		OrgTrusts:     make([]model.TrustEdge, 0, len(s.orgTrusts)),
 		AgentTrusts:   make([]model.TrustEdge, 0, len(s.agentTrusts)),
 		Stats:         make([]model.OrgStats, 0, len(s.statsByOrg)),
+		MessageMetrics: model.AdminMessageMetrics{
+			Agents:        make([]model.AgentMessageMetrics, 0, len(s.agents)),
+			Humans:        make([]model.HumanMessageMetrics, 0, len(s.humans)),
+			Organizations: make([]model.OrganizationMessageMetrics, 0, len(s.orgs)),
+		},
 	}
 
 	for _, v := range s.orgs {
@@ -2164,8 +2240,227 @@ func (s *MemoryStore) AdminSnapshot() model.AdminSnapshot {
 	for _, v := range s.statsByOrg {
 		snapshot.Stats = append(snapshot.Stats, v)
 	}
+	snapshot.MessageMetrics = s.buildAdminMessageMetricsLocked()
 
 	return snapshot
+}
+
+func (s *MemoryStore) buildAdminMessageMetricsLocked() model.AdminMessageMetrics {
+	agentMetricsByID := make(map[string]*model.AgentMessageMetrics, len(s.agents))
+	for agentUUID, agent := range s.agents {
+		metric := &model.AgentMessageMetrics{
+			AgentUUID:    agentUUID,
+			AgentID:      agent.AgentID,
+			OrgID:        agent.OrgID,
+			OwnerHumanID: agent.OwnerHumanID,
+			AgentType:    agentTypeFromMetadata(agent.Metadata),
+			Archive: model.AgentMessageArchive{
+				From: make([]model.MessageArchiveEntry, 0),
+				To:   make([]model.MessageArchiveEntry, 0),
+			},
+		}
+		agentMetricsByID[agentUUID] = metric
+	}
+
+	records := make([]model.MessageRecord, 0, len(s.messageRecords))
+	for _, record := range s.messageRecords {
+		records = append(records, record)
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].Message.CreatedAt.Equal(records[j].Message.CreatedAt) {
+			return records[i].Message.MessageID < records[j].Message.MessageID
+		}
+		return records[i].Message.CreatedAt.Before(records[j].Message.CreatedAt)
+	})
+
+	for _, record := range records {
+		if senderMetrics, ok := agentMetricsByID[record.Message.FromAgentUUID]; ok {
+			if entry, ok := fromArchiveEntry(record); ok {
+				senderMetrics.OutboxMessages++
+				senderMetrics.Archive.From = append(senderMetrics.Archive.From, entry)
+			}
+		}
+		if receiverMetrics, ok := agentMetricsByID[record.Message.ToAgentUUID]; ok {
+			if entry, ok := toArchiveEntry(record); ok {
+				receiverMetrics.InboxMessages++
+				receiverMetrics.Archive.To = append(receiverMetrics.Archive.To, entry)
+			}
+		}
+	}
+
+	agentIDs := make([]string, 0, len(agentMetricsByID))
+	for agentUUID := range agentMetricsByID {
+		agentIDs = append(agentIDs, agentUUID)
+	}
+	sort.Strings(agentIDs)
+	agents := make([]model.AgentMessageMetrics, 0, len(agentIDs))
+	for _, agentUUID := range agentIDs {
+		agents = append(agents, *agentMetricsByID[agentUUID])
+	}
+
+	humans := buildHumanMessageMetricsLocked(s.humans, agents)
+	organizations := buildOrganizationMessageMetricsLocked(s.orgs, agents)
+	return model.AdminMessageMetrics{
+		Agents:        agents,
+		Humans:        humans,
+		Organizations: organizations,
+	}
+}
+
+func fromArchiveEntry(record model.MessageRecord) (model.MessageArchiveEntry, bool) {
+	if strings.TrimSpace(record.Message.MessageID) == "" {
+		return model.MessageArchiveEntry{}, false
+	}
+	return model.MessageArchiveEntry{
+		MessageID:             record.Message.MessageID,
+		CounterpartyAgentUUID: strings.TrimSpace(record.Message.ToAgentUUID),
+		CounterpartyAgentID:   strings.TrimSpace(record.Message.ToAgentID),
+		CounterpartyAgentURI:  strings.TrimSpace(record.Message.ToAgentURI),
+		CounterpartyOrgID:     strings.TrimSpace(record.Message.ReceiverOrgID),
+		ContentType:           normalizedArchiveContentType(record.Message.ContentType),
+		PublishedAt:           record.Message.CreatedAt,
+		FirstReceivedAt:       record.FirstReceivedAt,
+		Status:                strings.TrimSpace(record.Status),
+	}, true
+}
+
+func toArchiveEntry(record model.MessageRecord) (model.MessageArchiveEntry, bool) {
+	if strings.TrimSpace(record.Message.MessageID) == "" || record.FirstReceivedAt == nil {
+		return model.MessageArchiveEntry{}, false
+	}
+	return model.MessageArchiveEntry{
+		MessageID:             record.Message.MessageID,
+		CounterpartyAgentUUID: strings.TrimSpace(record.Message.FromAgentUUID),
+		CounterpartyAgentID:   strings.TrimSpace(record.Message.FromAgentID),
+		CounterpartyAgentURI:  strings.TrimSpace(record.Message.FromAgentURI),
+		CounterpartyOrgID:     strings.TrimSpace(record.Message.SenderOrgID),
+		ContentType:           normalizedArchiveContentType(record.Message.ContentType),
+		PublishedAt:           record.Message.CreatedAt,
+		FirstReceivedAt:       record.FirstReceivedAt,
+		Status:                strings.TrimSpace(record.Status),
+	}, true
+}
+
+func normalizedArchiveContentType(contentType string) string {
+	contentType = strings.TrimSpace(contentType)
+	if contentType == "" {
+		return "unknown"
+	}
+	return contentType
+}
+
+func buildHumanMessageMetricsLocked(humans map[string]model.Human, agents []model.AgentMessageMetrics) []model.HumanMessageMetrics {
+	byHumanID := make(map[string]*model.HumanMessageMetrics, len(humans))
+	typeTotals := make(map[string]map[string]*model.AgentTypeMessageRollup, len(humans))
+	for humanID := range humans {
+		byHumanID[humanID] = &model.HumanMessageMetrics{
+			HumanID:         humanID,
+			AgentTypeTotals: make([]model.AgentTypeMessageRollup, 0),
+		}
+		typeTotals[humanID] = make(map[string]*model.AgentTypeMessageRollup)
+	}
+
+	for _, agent := range agents {
+		if agent.OwnerHumanID == nil {
+			continue
+		}
+		humanID := strings.TrimSpace(*agent.OwnerHumanID)
+		metric, ok := byHumanID[humanID]
+		if !ok {
+			continue
+		}
+		metric.LinkedAgents++
+		metric.OutboxMessages += agent.OutboxMessages
+		metric.InboxMessages += agent.InboxMessages
+		accumulateAgentTypeTotals(typeTotals[humanID], agent.AgentType, agent.OutboxMessages, agent.InboxMessages)
+	}
+
+	humanIDs := make([]string, 0, len(byHumanID))
+	for humanID := range byHumanID {
+		humanIDs = append(humanIDs, humanID)
+	}
+	sort.Strings(humanIDs)
+
+	out := make([]model.HumanMessageMetrics, 0, len(humanIDs))
+	for _, humanID := range humanIDs {
+		metric := *byHumanID[humanID]
+		metric.AgentTypeTotals = flattenTypeRollups(typeTotals[humanID])
+		out = append(out, metric)
+	}
+	return out
+}
+
+func buildOrganizationMessageMetricsLocked(orgs map[string]model.Organization, agents []model.AgentMessageMetrics) []model.OrganizationMessageMetrics {
+	byOrgID := make(map[string]*model.OrganizationMessageMetrics, len(orgs))
+	typeTotals := make(map[string]map[string]*model.AgentTypeMessageRollup, len(orgs))
+	for orgID := range orgs {
+		byOrgID[orgID] = &model.OrganizationMessageMetrics{
+			OrgID:           orgID,
+			AgentTypeTotals: make([]model.AgentTypeMessageRollup, 0),
+		}
+		typeTotals[orgID] = make(map[string]*model.AgentTypeMessageRollup)
+	}
+
+	for _, agent := range agents {
+		orgID := strings.TrimSpace(agent.OrgID)
+		if orgID == "" {
+			continue
+		}
+		metric, ok := byOrgID[orgID]
+		if !ok {
+			continue
+		}
+		metric.LinkedAgents++
+		metric.OutboxMessages += agent.OutboxMessages
+		metric.InboxMessages += agent.InboxMessages
+		accumulateAgentTypeTotals(typeTotals[orgID], agent.AgentType, agent.OutboxMessages, agent.InboxMessages)
+	}
+
+	orgIDs := make([]string, 0, len(byOrgID))
+	for orgID := range byOrgID {
+		orgIDs = append(orgIDs, orgID)
+	}
+	sort.Strings(orgIDs)
+
+	out := make([]model.OrganizationMessageMetrics, 0, len(orgIDs))
+	for _, orgID := range orgIDs {
+		metric := *byOrgID[orgID]
+		metric.AgentTypeTotals = flattenTypeRollups(typeTotals[orgID])
+		out = append(out, metric)
+	}
+	return out
+}
+
+func accumulateAgentTypeTotals(
+	totals map[string]*model.AgentTypeMessageRollup,
+	agentType string,
+	outboxMessages, inboxMessages int64,
+) {
+	normalizedType := normalizeAgentTypeOrUnknown(agentType)
+	rollup := totals[normalizedType]
+	if rollup == nil {
+		rollup = &model.AgentTypeMessageRollup{AgentType: normalizedType}
+		totals[normalizedType] = rollup
+	}
+	rollup.AgentCount++
+	rollup.OutboxMessages += outboxMessages
+	rollup.InboxMessages += inboxMessages
+}
+
+func flattenTypeRollups(source map[string]*model.AgentTypeMessageRollup) []model.AgentTypeMessageRollup {
+	if len(source) == 0 {
+		return []model.AgentTypeMessageRollup{}
+	}
+	keys := make([]string, 0, len(source))
+	for agentType := range source {
+		keys = append(keys, agentType)
+	}
+	sort.Strings(keys)
+	out := make([]model.AgentTypeMessageRollup, 0, len(keys))
+	for _, agentType := range keys {
+		out = append(out, *source[agentType])
+	}
+	return out
 }
 
 func (s *MemoryStore) CanPublish(senderAgentUUID, receiverAgentUUID string) (string, string, error) {
@@ -2308,6 +2603,9 @@ func (s *MemoryStore) LeaseMessage(messageID, receiverAgentUUID, deliveryID stri
 	}
 	record.Status = model.MessageDeliveryLeased
 	record.UpdatedAt = leasedAt
+	if record.FirstReceivedAt == nil {
+		record.FirstReceivedAt = timePtr(leasedAt)
+	}
 	record.LastLeasedAt = timePtr(leasedAt)
 	record.LeaseExpiresAt = timePtr(leaseExpiresAt)
 	record.DeliveryAttempts++

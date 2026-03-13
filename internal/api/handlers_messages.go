@@ -56,6 +56,7 @@ func messageStatusResponse(record model.MessageRecord) map[string]any {
 		"status":              record.Status,
 		"accepted_at":         record.AcceptedAt,
 		"updated_at":          record.UpdatedAt,
+		"first_received_at":   record.FirstReceivedAt,
 		"last_leased_at":      record.LastLeasedAt,
 		"lease_expires_at":    record.LeaseExpiresAt,
 		"acked_at":            record.AckedAt,

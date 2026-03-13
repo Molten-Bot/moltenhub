@@ -579,11 +579,27 @@ func requireEntityMetadata(t *testing.T, payload map[string]any, entityKey strin
 		if ok && len(gotMap) == 0 {
 			return
 		}
+		if entityKey == "agent" && ok && len(gotMap) == 1 && gotMap["agent_type"] == "unknown" {
+			return
+		}
 		t.Fatalf("expected %s.metadata to be empty or omitted, got %v payload=%v", entityKey, got, payload)
 	}
 	got, ok := entity["metadata"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected %s.metadata object, got %T payload=%v", entityKey, entity["metadata"], payload)
+	}
+	if entityKey == "agent" {
+		normalizedWant := make(map[string]any, len(want)+1)
+		for key, value := range want {
+			normalizedWant[key] = value
+		}
+		if _, ok := normalizedWant["agent_type"]; !ok {
+			normalizedWant["agent_type"] = "unknown"
+		}
+		if !reflect.DeepEqual(got, normalizedWant) {
+			t.Fatalf("expected %s.metadata=%v, got %v", entityKey, normalizedWant, got)
+		}
+		return
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected %s.metadata=%v, got %v", entityKey, want, got)

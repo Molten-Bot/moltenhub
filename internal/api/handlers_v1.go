@@ -887,6 +887,8 @@ func (h *Handler) handleAgentMetadataSelfPatch(w http.ResponseWriter, r *http.Re
 			switch {
 			case errors.Is(err, store.ErrAgentNotFound):
 				writeError(w, http.StatusNotFound, "unknown_agent", "agent_uuid is not registered")
+			case errors.Is(err, store.ErrInvalidAgentType):
+				writeError(w, http.StatusBadRequest, "invalid_agent_type", "metadata.agent_type must be 2-64 chars: a-z, 0-9, ., _, -")
 			default:
 				writeError(w, http.StatusInternalServerError, "store_error", "failed to update agent metadata")
 			}
