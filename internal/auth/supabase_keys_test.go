@@ -12,6 +12,7 @@ func TestIsSafeSupabaseBrowserKey(t *testing.T) {
 	}{
 		{name: "empty", key: "", want: false},
 		{name: "publishable prefix", key: "sb_publishable_abcd", want: true},
+		{name: "sbp publishable prefix", key: "sbp_abcd", want: true},
 		{name: "anon prefix", key: "sb_anon_abcd", want: true},
 		{name: "secret prefix", key: "sb_secret_abcd", want: false},
 		{name: "service role prefix", key: "sb_service_role_abcd", want: false},

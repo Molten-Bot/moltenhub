@@ -63,7 +63,7 @@ func TestCollectLaunchDiagnostics_WarnsForUnknownSupabaseKeyFormat(t *testing.T)
 	diagnostics, err := collectLaunchDiagnostics(mapLookup(map[string]string{
 		"HUMAN_AUTH_PROVIDER": "supabase",
 		"SUPABASE_URL":        "https://example.supabase.co",
-		"SUPABASE_ANON_KEY":   "sbp_example_token",
+		"SUPABASE_ANON_KEY":   "unknown_key_format",
 	}))
 	if err != nil {
 		t.Fatalf("expected no startup error for unknown SUPABASE_ANON_KEY format, got %v", err)

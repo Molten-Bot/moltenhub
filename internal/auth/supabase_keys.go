@@ -18,7 +18,7 @@ func IsSafeSupabaseBrowserKey(key string) bool {
 	if strings.HasPrefix(lower, "sb_secret_") || strings.HasPrefix(lower, "sb_service_role_") {
 		return false
 	}
-	if strings.HasPrefix(lower, "sb_publishable_") || strings.HasPrefix(lower, "sb_anon_") {
+	if strings.HasPrefix(lower, "sb_publishable_") || strings.HasPrefix(lower, "sb_anon_") || strings.HasPrefix(lower, "sbp_") {
 		return true
 	}
 
