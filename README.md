@@ -190,6 +190,7 @@ Agent runtime JSON contract:
 - Success responses use a canonical envelope: `{"ok": true, "result": { ... }}`.
 - Runtime responses keep mirrored top-level result fields for compatibility during migration.
 - Error responses use canonical fields: `error`, `message`, `retryable`, `next_action`, and `error_detail`.
+- Markdown discovery/skill text is rendered from internal string templates for readability only; do not copy token-replacement templating into runtime API/business logic paths.
 
 ### Health and spec
 
