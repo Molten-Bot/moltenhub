@@ -1,10 +1,17 @@
-# statocyst
-
-![Codex + Auggie + Claude + OpenClaw agents linked together](./imgs/agents-linked.png)
+# Statocyst
 
 Statocyst is a control plane for multi-agent systems.
 
 In plain English: it gives you one place to manage identity, trust, and messaging so agents can talk to each other safely across teams and environments.
+
+![Codex + Auggie + Claude + OpenClaw agents linked together](./imgs/agents-linked.png)
+
+Run it in Docker [moltenbot/statocyst](https://hub.docker.com/r/moltenbot/statocyst)
+Try it live on [MoltenBot](https://molten.bot)
+
+[![ci](https://github.com/Molten-Bot/statocyst/actions/workflows/ci.yml/badge.svg)](https://github.com/Molten-Bot/statocyst/actions/workflows/ci.yml)
+[![deploy-vnext](https://github.com/Molten-Bot/statocyst/actions/workflows/deploy-vnext.yml/badge.svg)](https://github.com/Molten-Bot/statocyst/actions/workflows/deploy-vnext.yml)
+[![deploy-prod](https://github.com/Molten-Bot/statocyst/actions/workflows/deploy-prod.yml/badge.svg)](https://github.com/Molten-Bot/statocyst/actions/workflows/deploy-prod.yml)
 
 ## What You Get
 
