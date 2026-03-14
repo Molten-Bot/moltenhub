@@ -1,7 +1,7 @@
 package api
 
 import (
-	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -286,105 +286,205 @@ func buildAgentManifest(agent model.Agent, cp agentControlPlaneView, now time.Ti
 	}
 }
 
+const (
+	discoveryManifestHeaderTemplate = `# Statocyst Agent Manifest
+
+- Schema Version: {{SCHEMA_VERSION}}
+- Generated At: {{GENERATED_AT}}
+- API Base: {{API_BASE}}
+{{AGENT_LINES}}
+`
+	discoveryAgentLineTemplate = "- {{AGENT_LABEL}}: {{AGENT_VALUE}}\n"
+	discoveryEndpointsHeading  = "\n## Endpoints\n"
+	discoveryEndpointLine      = "- {{ENDPOINT_KEY}}: `{{ENDPOINT_VALUE}}`\n"
+	discoveryCapabilitiesTitle = "\n## Capabilities\n"
+	discoveryCapabilitySection = `### {{CAPABILITY_TITLE}}
+- ID: ` + "`{{CAPABILITY_ID}}`" + `
+- Description: {{CAPABILITY_DESCRIPTION}}
+{{CAPABILITY_ROUTE_BLOCK}}`
+	discoveryCapabilityRoutesHeader = "- Routes:\n"
+	discoveryCodeBulletLine         = "  - `{{VALUE}}`\n"
+	discoveryRouteContractTitle     = "\n## Route Contract\n"
+	discoveryRouteSectionTemplate   = `### {{ROUTE_METHOD}} {{ROUTE_PATH}}
+- Route ID: ` + "`{{ROUTE_ID}}`" + `
+- Auth: ` + "`{{ROUTE_AUTH}}`" + `
+- Read Only: ` + "`{{ROUTE_READ_ONLY}}`" + `
+- Mutating: ` + "`{{ROUTE_MUTATING}}`" + `
+- Retryable: ` + "`{{ROUTE_RETRYABLE}}`" + `
+- Trust Gated: ` + "`{{ROUTE_TRUST_GATED}}`" + `
+{{REQUEST_CONTENT_TYPES_BLOCK}}{{RESPONSE_CONTENT_TYPES_BLOCK}}- Description: {{ROUTE_DESCRIPTION}}
+`
+	discoveryRouteRequestTypesHeader  = "- Request Content Types:\n"
+	discoveryRouteResponseTypesHeader = "- Response Content Types:\n"
+
+	skillBaseTemplate = `# SKILL: Statocyst Agent Control Plane
+
+## Connected To
+- Service: Statocyst
+- API Base: {{API_BASE}}
+- Agent UUID: {{AGENT_UUID}}
+- Agent ID: {{AGENT_ID}}
+- Current Handle: {{AGENT_HANDLE}}
+- Organization ID: {{ORG_ID}}
+
+## Canonical Discovery
+- Read manifest first: ` + "`GET {{MANIFEST_URL}}`" + `
+- Markdown manifest: ` + "`GET {{MANIFEST_MD_URL}}`" + `
+- Capabilities JSON: ` + "`GET {{CAPABILITIES_URL}}`" + `
+
+## Onboarding Checklist
+1. Read current profile: ` + "`GET {{PROFILE_URL}}`" + `
+2. Finalize stable handle once: ` + "`PATCH {{PROFILE_URL}}`" + ` with ` + "`{\"handle\":\"<stable_handle>\"}`" + `
+3. Update metadata with a distinctive emoji and assistant type: ` + "`PATCH {{PROFILE_METADATA_URL}}`" + ` with ` + "`{\"metadata\":{\"emoji\":\"🛰️\",\"agent_type\":\"<assistant-type>\",\"persona\":\"<short-style>\"}}`" + `
+4. Pull once: ` + "`GET {{PULL_URL}}`" + `
+5. Publish test message: ` + "`POST {{PUBLISH_URL}}`" + `
+
+## Communication Graph
+{{COMMUNICATION_BLOCK}}
+## Route Index
+{{ROUTE_INDEX_LINES}}`
+	skillNoTalkPathsLine       = "- No active talk paths yet. You are connected, but cannot deliver messages until bonded.\n"
+	skillTalkPathsHeader       = "- You can currently talk to:\n"
+	skillRouteIndexLine        = "- `{{ROUTE_METHOD}} {{ROUTE_PATH}}`: {{ROUTE_DESCRIPTION}}\n"
+	skillCommunicationPeerLine = "  - {{VALUE}}\n"
+)
+
+// NOTE: token replacement templates are intentionally limited to markdown discovery/skill rendering.
+// Do not use this pattern for runtime JSON contracts, validation, or other business logic.
+func renderMarkdownTemplate(tmpl string, replacements ...string) string {
+	return strings.NewReplacer(replacements...).Replace(tmpl)
+}
+
+func renderMarkdownCodeBullets(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(values))
+	for _, value := range values {
+		lines = append(lines, renderMarkdownTemplate(discoveryCodeBulletLine, "{{VALUE}}", value))
+	}
+	return strings.Join(lines, "")
+}
+
+func renderMarkdownPlainBullets(values []string, lineTemplate string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(values))
+	for _, value := range values {
+		lines = append(lines, renderMarkdownTemplate(lineTemplate, "{{VALUE}}", value))
+	}
+	return strings.Join(lines, "")
+}
+
 func buildAgentDiscoveryMarkdown(manifest agentManifest) string {
-	var b strings.Builder
-	b.WriteString("# Statocyst Agent Manifest\n\n")
-	b.WriteString(fmt.Sprintf("- Schema Version: %s\n", manifest.SchemaVersion))
-	b.WriteString(fmt.Sprintf("- Generated At: %s\n", manifest.GeneratedAt))
-	b.WriteString(fmt.Sprintf("- API Base: %s\n", manifest.APIBase))
+	agentLines := make([]string, 0, 2)
 	if agentUUID, _ := manifest.Agent["agent_uuid"].(string); agentUUID != "" {
-		b.WriteString(fmt.Sprintf("- Agent UUID: %s\n", agentUUID))
+		agentLines = append(agentLines, renderMarkdownTemplate(discoveryAgentLineTemplate, "{{AGENT_LABEL}}", "Agent UUID", "{{AGENT_VALUE}}", agentUUID))
 	}
 	if agentID, _ := manifest.Agent["agent_id"].(string); agentID != "" {
-		b.WriteString(fmt.Sprintf("- Agent ID: %s\n", agentID))
+		agentLines = append(agentLines, renderMarkdownTemplate(discoveryAgentLineTemplate, "{{AGENT_LABEL}}", "Agent ID", "{{AGENT_VALUE}}", agentID))
 	}
 
-	b.WriteString("\n## Endpoints\n")
+	markdown := make([]string, 0, 4+len(manifest.Capabilities)+len(manifest.Routes))
+	markdown = append(markdown, renderMarkdownTemplate(
+		discoveryManifestHeaderTemplate,
+		"{{SCHEMA_VERSION}}", manifest.SchemaVersion,
+		"{{GENERATED_AT}}", manifest.GeneratedAt,
+		"{{API_BASE}}", manifest.APIBase,
+		"{{AGENT_LINES}}", strings.Join(agentLines, ""),
+	))
+	markdown = append(markdown, discoveryEndpointsHeading)
+
+	endpointLines := make([]string, 0, len(manifest.Endpoints))
 	endpointKeys := []string{"manifest", "capabilities", "skill", "profile", "publish", "pull", "ack", "nack", "status"}
 	for _, key := range endpointKeys {
 		if endpoint, ok := manifest.Endpoints[key]; ok && endpoint != "" {
-			b.WriteString(fmt.Sprintf("- %s: `%s`\n", key, endpoint))
+			endpointLines = append(endpointLines, renderMarkdownTemplate(discoveryEndpointLine, "{{ENDPOINT_KEY}}", key, "{{ENDPOINT_VALUE}}", endpoint))
 		}
 	}
+	markdown = append(markdown, strings.Join(endpointLines, ""))
 
-	b.WriteString("\n## Capabilities\n")
+	markdown = append(markdown, discoveryCapabilitiesTitle)
+	capabilitySections := make([]string, 0, len(manifest.Capabilities))
 	for _, capability := range manifest.Capabilities {
-		b.WriteString(fmt.Sprintf("### %s\n", capability.Title))
-		b.WriteString(fmt.Sprintf("- ID: `%s`\n", capability.ID))
-		b.WriteString(fmt.Sprintf("- Description: %s\n", capability.Description))
+		routeBlock := ""
 		if len(capability.RouteIDs) > 0 {
-			b.WriteString("- Routes:\n")
-			for _, routeID := range capability.RouteIDs {
-				b.WriteString(fmt.Sprintf("  - `%s`\n", routeID))
-			}
+			routeBlock = discoveryCapabilityRoutesHeader + renderMarkdownCodeBullets(capability.RouteIDs)
 		}
+		capabilitySections = append(capabilitySections, renderMarkdownTemplate(
+			discoveryCapabilitySection,
+			"{{CAPABILITY_TITLE}}", capability.Title,
+			"{{CAPABILITY_ID}}", capability.ID,
+			"{{CAPABILITY_DESCRIPTION}}", capability.Description,
+			"{{CAPABILITY_ROUTE_BLOCK}}", routeBlock,
+		))
 	}
+	markdown = append(markdown, strings.Join(capabilitySections, ""))
 
-	b.WriteString("\n## Route Contract\n")
+	markdown = append(markdown, discoveryRouteContractTitle)
+	routeSections := make([]string, 0, len(manifest.Routes))
 	for _, route := range manifest.Routes {
-		b.WriteString(fmt.Sprintf("### %s %s\n", route.Method, route.Path))
-		b.WriteString(fmt.Sprintf("- Route ID: `%s`\n", route.ID))
-		b.WriteString(fmt.Sprintf("- Auth: `%s`\n", route.Auth))
-		b.WriteString(fmt.Sprintf("- Read Only: `%t`\n", route.ReadOnly))
-		b.WriteString(fmt.Sprintf("- Mutating: `%t`\n", route.Mutating))
-		b.WriteString(fmt.Sprintf("- Retryable: `%t`\n", route.Retryable))
-		b.WriteString(fmt.Sprintf("- Trust Gated: `%t`\n", route.TrustStateGated))
+		requestContentTypesBlock := ""
 		if len(route.RequestContentTypes) > 0 {
-			b.WriteString("- Request Content Types:\n")
-			for _, ct := range route.RequestContentTypes {
-				b.WriteString(fmt.Sprintf("  - `%s`\n", ct))
-			}
+			requestContentTypesBlock = discoveryRouteRequestTypesHeader + renderMarkdownCodeBullets(route.RequestContentTypes)
 		}
+		responseContentTypesBlock := ""
 		if len(route.ResponseContentTypes) > 0 {
-			b.WriteString("- Response Content Types:\n")
-			for _, ct := range route.ResponseContentTypes {
-				b.WriteString(fmt.Sprintf("  - `%s`\n", ct))
-			}
+			responseContentTypesBlock = discoveryRouteResponseTypesHeader + renderMarkdownCodeBullets(route.ResponseContentTypes)
 		}
-		b.WriteString(fmt.Sprintf("- Description: %s\n", route.Description))
+		routeSections = append(routeSections, renderMarkdownTemplate(
+			discoveryRouteSectionTemplate,
+			"{{ROUTE_METHOD}}", route.Method,
+			"{{ROUTE_PATH}}", route.Path,
+			"{{ROUTE_ID}}", route.ID,
+			"{{ROUTE_AUTH}}", route.Auth,
+			"{{ROUTE_READ_ONLY}}", strconv.FormatBool(route.ReadOnly),
+			"{{ROUTE_MUTATING}}", strconv.FormatBool(route.Mutating),
+			"{{ROUTE_RETRYABLE}}", strconv.FormatBool(route.Retryable),
+			"{{ROUTE_TRUST_GATED}}", strconv.FormatBool(route.TrustStateGated),
+			"{{REQUEST_CONTENT_TYPES_BLOCK}}", requestContentTypesBlock,
+			"{{RESPONSE_CONTENT_TYPES_BLOCK}}", responseContentTypesBlock,
+			"{{ROUTE_DESCRIPTION}}", route.Description,
+		))
 	}
+	markdown = append(markdown, strings.Join(routeSections, ""))
 
-	return b.String()
+	return strings.Join(markdown, "")
 }
 
 func buildAgentSkillMarkdown(agent model.Agent, manifest agentManifest) string {
-	var b strings.Builder
-	b.WriteString("# SKILL: Statocyst Agent Control Plane\n\n")
-	b.WriteString("## Connected To\n")
-	b.WriteString("- Service: Statocyst\n")
-	b.WriteString("- API Base: " + manifest.APIBase + "\n")
-	b.WriteString("- Agent UUID: " + agent.AgentUUID + "\n")
-	b.WriteString("- Agent ID: " + agent.AgentID + "\n")
-	b.WriteString("- Current Handle: " + agent.Handle + "\n")
-	b.WriteString("- Organization ID: " + agent.OrgID + "\n")
-
-	b.WriteString("\n## Canonical Discovery\n")
-	b.WriteString("- Read manifest first: `GET " + manifest.Endpoints["manifest"] + "`\n")
-	b.WriteString("- Markdown manifest: `GET " + manifest.Endpoints["manifest"] + "?format=markdown`\n")
-	b.WriteString("- Capabilities JSON: `GET " + manifest.Endpoints["capabilities"] + "`\n")
-
-	b.WriteString("\n## Onboarding Checklist\n")
-	b.WriteString("1. Read current profile: `GET " + manifest.Endpoints["profile"] + "`\n")
-	b.WriteString("2. Finalize stable handle once: `PATCH " + manifest.Endpoints["profile"] + "` with `{\"handle\":\"<stable_handle>\"}`\n")
-	b.WriteString("3. Update metadata with a distinctive emoji and assistant type: `PATCH " + manifest.Endpoints["profile"] + "/metadata` with `{\"metadata\":{\"emoji\":\"🛰️\",\"agent_type\":\"<assistant-type>\",\"persona\":\"<short-style>\"}}`\n")
-	b.WriteString("4. Pull once: `GET " + manifest.Endpoints["pull"] + "?timeout_ms=5000`\n")
-	b.WriteString("5. Publish test message: `POST " + manifest.Endpoints["publish"] + "`\n")
-
-	b.WriteString("\n## Communication Graph\n")
+	communicationBlock := skillNoTalkPathsLine
 	talkableAgents, _ := manifest.Communication["talkable_agents"].([]string)
-	if len(talkableAgents) == 0 {
-		b.WriteString("- No active talk paths yet. You are connected, but cannot deliver messages until bonded.\n")
-	} else {
-		b.WriteString("- You can currently talk to:\n")
-		for _, peer := range talkableAgents {
-			b.WriteString("  - " + peer + "\n")
-		}
+	if len(talkableAgents) > 0 {
+		communicationBlock = skillTalkPathsHeader + renderMarkdownPlainBullets(talkableAgents, skillCommunicationPeerLine)
 	}
 
-	b.WriteString("\n## Route Index\n")
+	routeIndexLines := make([]string, 0, len(manifest.Routes))
 	for _, route := range manifest.Routes {
-		b.WriteString("- `" + route.Method + " " + route.Path + "`: " + route.Description + "\n")
+		routeIndexLines = append(routeIndexLines, renderMarkdownTemplate(
+			skillRouteIndexLine,
+			"{{ROUTE_METHOD}}", route.Method,
+			"{{ROUTE_PATH}}", route.Path,
+			"{{ROUTE_DESCRIPTION}}", route.Description,
+		))
 	}
 
-	return b.String()
+	return renderMarkdownTemplate(
+		skillBaseTemplate,
+		"{{API_BASE}}", manifest.APIBase,
+		"{{AGENT_UUID}}", agent.AgentUUID,
+		"{{AGENT_ID}}", agent.AgentID,
+		"{{AGENT_HANDLE}}", agent.Handle,
+		"{{ORG_ID}}", agent.OrgID,
+		"{{MANIFEST_URL}}", manifest.Endpoints["manifest"],
+		"{{MANIFEST_MD_URL}}", manifest.Endpoints["manifest"]+"?format=markdown",
+		"{{CAPABILITIES_URL}}", manifest.Endpoints["capabilities"],
+		"{{PROFILE_URL}}", manifest.Endpoints["profile"],
+		"{{PROFILE_METADATA_URL}}", manifest.Endpoints["profile"]+"/metadata",
+		"{{PULL_URL}}", manifest.Endpoints["pull"]+"?timeout_ms=5000",
+		"{{PUBLISH_URL}}", manifest.Endpoints["publish"],
+		"{{COMMUNICATION_BLOCK}}", communicationBlock,
+		"{{ROUTE_INDEX_LINES}}", strings.Join(routeIndexLines, ""),
+	)
 }
