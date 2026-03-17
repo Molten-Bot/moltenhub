@@ -23,6 +23,8 @@ const (
 	defaultS3Prefix = "statocyst-queue"
 	// Bound a queue operation when callers provide no deadline.
 	defaultS3QueueOpTimeout = 8 * time.Second
+	// Startup check should fail fast so readiness decisions are not delayed too long.
+	defaultS3QueueStartupCheckTimeout = 5 * time.Second
 )
 
 type s3QueueStore struct {
@@ -80,7 +82,7 @@ func NewS3QueueStoreFromEnv() (MessageQueueStore, error) {
 	}
 
 	return &s3QueueStore{
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		httpClient: newS3HTTPClient(10 * time.Second),
 		endpoint:   strings.TrimSuffix(endpoint, "/"),
 		bucket:     bucket,
 		region:     region,
@@ -89,6 +91,39 @@ func NewS3QueueStoreFromEnv() (MessageQueueStore, error) {
 		signer:     newS3Signer(accessKeyID, secretAccessKey, region),
 		opTimeout:  defaultS3QueueOpTimeout,
 	}, nil
+}
+
+func (s *s3QueueStore) StartupCheck(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultS3QueueStartupCheckTimeout)
+		defer cancel()
+	}
+	query := url.Values{}
+	query.Set("list-type", "2")
+	query.Set("max-keys", "1")
+	query.Set("prefix", s.prefix+"/queues/")
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.objectURL("", query), nil)
+	if err != nil {
+		return fmt.Errorf("build queue startup check request: %w", err)
+	}
+	if err := s.signRequest(req, nil); err != nil {
+		return err
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("queue startup check request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("queue startup check status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	return nil
 }
 
 func (s *s3QueueStore) Enqueue(ctx context.Context, message model.Message) error {

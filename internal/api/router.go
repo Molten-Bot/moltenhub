@@ -52,6 +52,7 @@ type Handler struct {
 	headlessModeURL   string
 	storageHealthMu   sync.RWMutex
 	storageHealth     store.StorageHealthStatus
+	startupSummary    map[string]any
 	queueRuntimeError string
 	peerHTTPClient    *http.Client
 	peerOutboxMu      sync.Mutex
@@ -112,6 +113,7 @@ func NewHandler(
 		headlessMode:      headlessMode,
 		headlessModeURL:   "",
 		storageHealth:     store.DefaultStorageHealthStatus(),
+		startupSummary:    map[string]any{},
 		peerHTTPClient:    &http.Client{Timeout: 5 * time.Second},
 		peerOutboxTimeout: defaultPeerOutboxBackgroundTimeout,
 	}
@@ -497,14 +499,18 @@ func (h *Handler) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		queuePayload["error"] = queueErr
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"status": health.OverallStatus(),
 		"storage": map[string]any{
 			"startup_mode": health.StartupMode,
 			"state":        statePayload,
 			"queue":        queuePayload,
 		},
-	})
+	}
+	for key, value := range h.currentStartupSummary() {
+		payload[key] = value
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (h *Handler) SetStorageHealth(health store.StorageHealthStatus) {
@@ -532,6 +538,34 @@ func (h *Handler) currentStorageHealth() store.StorageHealthStatus {
 		}
 	}
 	return health
+}
+
+func (h *Handler) SetStartupSummary(summary map[string]any) {
+	h.storageHealthMu.Lock()
+	if len(summary) == 0 {
+		h.startupSummary = map[string]any{}
+		h.storageHealthMu.Unlock()
+		return
+	}
+	out := make(map[string]any, len(summary))
+	for key, value := range summary {
+		out[key] = value
+	}
+	h.startupSummary = out
+	h.storageHealthMu.Unlock()
+}
+
+func (h *Handler) currentStartupSummary() map[string]any {
+	h.storageHealthMu.RLock()
+	defer h.storageHealthMu.RUnlock()
+	if len(h.startupSummary) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(h.startupSummary))
+	for key, value := range h.startupSummary {
+		out[key] = value
+	}
+	return out
 }
 
 func (h *Handler) setQueueRuntimeError(msg string) {

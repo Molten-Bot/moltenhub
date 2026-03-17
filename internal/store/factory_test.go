@@ -83,10 +83,13 @@ func TestParseStorageStartupMode(t *testing.T) {
 }
 
 func TestNewStoresFromEnv_S3QueueConfigured(t *testing.T) {
+	server := newFakeS3StoreServer(t)
+	defer server.Close()
+
 	t.Setenv("STATOCYST_STATE_BACKEND", "memory")
 	t.Setenv("STATOCYST_QUEUE_BACKEND", "s3")
-	t.Setenv("STATOCYST_QUEUE_S3_ENDPOINT", "http://localhost:9000")
-	t.Setenv("STATOCYST_QUEUE_S3_BUCKET", "statocyst-queue")
+	t.Setenv("STATOCYST_QUEUE_S3_ENDPOINT", server.URL)
+	t.Setenv("STATOCYST_QUEUE_S3_BUCKET", "state-bucket")
 	t.Setenv("STATOCYST_QUEUE_S3_PREFIX", "statocyst-queue")
 	t.Setenv("STATOCYST_QUEUE_S3_PATH_STYLE", "true")
 
@@ -110,6 +113,30 @@ func TestNewStoresFromEnv_S3QueueRequiresBucketAndEndpoint(t *testing.T) {
 
 	if _, _, err := NewStoresFromEnv(); err == nil {
 		t.Fatalf("expected error for missing s3 queue config")
+	}
+}
+
+func TestNewStoresFromEnv_StrictFailsWhenS3QueueStartupCheckFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path == "queue-bucket" && r.Method == http.MethodGet && r.URL.Query().Get("list-type") == "2" {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `access denied`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	t.Setenv("STATOCYST_STATE_BACKEND", "memory")
+	t.Setenv("STATOCYST_QUEUE_BACKEND", "s3")
+	t.Setenv("STATOCYST_QUEUE_S3_ENDPOINT", server.URL)
+	t.Setenv("STATOCYST_QUEUE_S3_BUCKET", "queue-bucket")
+	t.Setenv("STATOCYST_QUEUE_S3_PREFIX", "statocyst-queue")
+	t.Setenv("STATOCYST_QUEUE_S3_PATH_STYLE", "true")
+
+	if _, _, err := NewStoresFromEnv(); err == nil {
+		t.Fatalf("expected strict startup to fail when queue startup check fails")
 	}
 }
 
@@ -147,8 +174,8 @@ func TestNewStoresFromEnv_S3StateAndS3QueueUseIndependentStores(t *testing.T) {
 	t.Setenv("STATOCYST_STATE_S3_BUCKET", "state-bucket")
 	t.Setenv("STATOCYST_STATE_S3_PREFIX", "statocyst-state")
 	t.Setenv("STATOCYST_STATE_S3_PATH_STYLE", "true")
-	t.Setenv("STATOCYST_QUEUE_S3_ENDPOINT", "http://localhost:9000")
-	t.Setenv("STATOCYST_QUEUE_S3_BUCKET", "queue-bucket")
+	t.Setenv("STATOCYST_QUEUE_S3_ENDPOINT", server.URL)
+	t.Setenv("STATOCYST_QUEUE_S3_BUCKET", "state-bucket")
 	t.Setenv("STATOCYST_QUEUE_S3_PREFIX", "statocyst-queue")
 	t.Setenv("STATOCYST_QUEUE_S3_PATH_STYLE", "true")
 

@@ -15,7 +15,7 @@ func setOpenAPIDocAlternateHeaders(w http.ResponseWriter) {
 	w.Header().Set("Link", `</openapi.yaml>; rel="alternate"; type="text/yaml", </openapi.md>; rel="alternate"; type="text/markdown"`)
 }
 
-func (h *Handler) handleOpenAPIYAML(w http.ResponseWriter, r *http.Request) {
+func WriteOpenAPIYAML(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w)
 		return
@@ -27,7 +27,7 @@ func (h *Handler) handleOpenAPIYAML(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(openapiYAML)
 }
 
-func (h *Handler) handleOpenAPIMarkdown(w http.ResponseWriter, r *http.Request) {
+func WriteOpenAPIMarkdown(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w)
 		return
@@ -36,4 +36,12 @@ func (h *Handler) handleOpenAPIMarkdown(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(openapiMarkdown)
+}
+
+func (h *Handler) handleOpenAPIYAML(w http.ResponseWriter, r *http.Request) {
+	WriteOpenAPIYAML(w, r)
+}
+
+func (h *Handler) handleOpenAPIMarkdown(w http.ResponseWriter, r *http.Request) {
+	WriteOpenAPIMarkdown(w, r)
 }

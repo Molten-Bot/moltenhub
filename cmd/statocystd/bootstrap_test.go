@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"statocyst/internal/auth"
 	"statocyst/internal/store"
 )
 
@@ -60,30 +62,27 @@ func TestBootstrapHandlerDelegatesAfterReady(t *testing.T) {
 func TestBootstrapHandlerReturnsUnavailableForApplicationRoutes(t *testing.T) {
 	handler := newBootstrapHandler(store.StorageStartupModeDegraded, "s3", "s3")
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/orgs", nil)
 	resp := httptest.NewRecorder()
 	handler.ServeHTTP(resp, req)
 
 	if resp.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected /v1/me 503 during startup, got %d body=%s", resp.Code, resp.Body.String())
+		t.Fatalf("expected /v1/orgs 503 during startup, got %d body=%s", resp.Code, resp.Body.String())
 	}
 	if got := resp.Header().Get("Retry-After"); got != "1" {
 		t.Fatalf("expected Retry-After=1 for startup response, got %q", got)
 	}
 }
 
-func TestBootstrapHandlerReturnsUnavailableForOpenAPIWhileStarting(t *testing.T) {
+func TestBootstrapHandlerServesOpenAPIWhileStarting(t *testing.T) {
 	handler := newBootstrapHandler(store.StorageStartupModeDegraded, "s3", "s3")
 
 	req := httptest.NewRequest(http.MethodGet, "/openapi.yaml", nil)
 	resp := httptest.NewRecorder()
 	handler.ServeHTTP(resp, req)
 
-	if resp.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected /openapi.yaml 503 during startup, got %d body=%s", resp.Code, resp.Body.String())
-	}
-	if got := resp.Header().Get("Retry-After"); got != "1" {
-		t.Fatalf("expected Retry-After=1 for openapi startup response, got %q", got)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected /openapi.yaml 200 during startup, got %d body=%s", resp.Code, resp.Body.String())
 	}
 }
 
@@ -96,5 +95,66 @@ func TestBootstrapHandlerPingAllowsHeadBeforeReady(t *testing.T) {
 
 	if resp.Code != http.StatusNoContent {
 		t.Fatalf("expected HEAD /ping 204 before ready, got %d", resp.Code)
+	}
+}
+
+func TestBootstrapHandlerAllowsOpenAPIAndUIConfigBeforeReady(t *testing.T) {
+	handler := newBootstrapHandler(
+		store.StorageStartupModeDegraded,
+		"s3",
+		"s3",
+		bootstrapOptions{
+			humanAuth:    auth.NewDevHumanAuthProvider(),
+			bindTokenTTL: 10 * time.Minute,
+		},
+	)
+
+	openAPIReq := httptest.NewRequest(http.MethodGet, "/openapi.yaml", nil)
+	openAPIResp := httptest.NewRecorder()
+	handler.ServeHTTP(openAPIResp, openAPIReq)
+	if openAPIResp.Code != http.StatusOK {
+		t.Fatalf("expected /openapi.yaml 200 before ready, got %d", openAPIResp.Code)
+	}
+
+	uiReq := httptest.NewRequest(http.MethodGet, "/v1/ui/config", nil)
+	uiResp := httptest.NewRecorder()
+	handler.ServeHTTP(uiResp, uiReq)
+	if uiResp.Code != http.StatusOK {
+		t.Fatalf("expected /v1/ui/config 200 before ready, got %d body=%s", uiResp.Code, uiResp.Body.String())
+	}
+}
+
+func TestBootstrapHandlerServesIdentityOnlyMeBeforeReady(t *testing.T) {
+	handler := newBootstrapHandler(
+		store.StorageStartupModeDegraded,
+		"s3",
+		"s3",
+		bootstrapOptions{
+			humanAuth: auth.NewDevHumanAuthProvider(),
+		},
+	)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
+	getReq.Header.Set("X-Human-Id", "alice")
+	getReq.Header.Set("X-Human-Email", "alice@example.com")
+	getResp := httptest.NewRecorder()
+	handler.ServeHTTP(getResp, getReq)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("expected GET /v1/me 200 during startup, got %d body=%s", getResp.Code, getResp.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(getResp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode startup me payload: %v", err)
+	}
+	if got, _ := payload["boot_status"].(string); got != "starting" {
+		t.Fatalf("expected startup me boot_status=starting, got %q payload=%v", got, payload)
+	}
+
+	patchReq := httptest.NewRequest(http.MethodPatch, "/v1/me", nil)
+	patchResp := httptest.NewRecorder()
+	handler.ServeHTTP(patchResp, patchReq)
+	if patchResp.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected PATCH /v1/me 503 during startup, got %d body=%s", patchResp.Code, patchResp.Body.String())
 	}
 }
