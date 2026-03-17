@@ -62,7 +62,35 @@ func main() {
 		storageStartupMode,
 		configuredBackendFromEnv(os.Getenv("STATOCYST_STATE_BACKEND"), "memory"),
 		configuredBackendFromEnv(os.Getenv("STATOCYST_QUEUE_BACKEND"), "memory"),
+		bootstrapOptions{
+			humanAuth:         humanAuth,
+			supabaseURL:       os.Getenv("SUPABASE_URL"),
+			supabaseAnonKey:   os.Getenv("SUPABASE_ANON_KEY"),
+			superAdminEmails:  os.Getenv("SUPER_ADMIN_EMAILS"),
+			superAdminDomains: os.Getenv("SUPER_ADMIN_DOMAINS"),
+			superAdminReview:  superAdminReviewMode,
+			bindTokenTTL:      bindTTL,
+			headlessMode:      headlessMode,
+		},
 	)
+	startupStartedAt := time.Now().UTC()
+	currentPhase := "boot"
+	phaseStartedAt := startupStartedAt
+	phaseDurationsMS := make(map[string]int64)
+	bootstrap.SetStartupPhase(currentPhase, phaseStartedAt)
+	setStartupPhase := func(name string) {
+		now := time.Now().UTC()
+		if currentPhase != "" {
+			elapsed := now.Sub(phaseStartedAt).Milliseconds()
+			if elapsed < 0 {
+				elapsed = 0
+			}
+			phaseDurationsMS[currentPhase] = elapsed
+		}
+		currentPhase = strings.TrimSpace(name)
+		phaseStartedAt = now
+		bootstrap.SetStartupPhase(currentPhase, phaseStartedAt)
+	}
 
 	server := &http.Server{
 		Addr:    addr,
@@ -75,10 +103,12 @@ func main() {
 	}
 
 	go func() {
+		setStartupPhase("storage_hydrate")
 		controlStore, queueStore, storageHealth, storeErr := store.NewStoresFromEnvWithMode(storageStartupMode)
 		if storeErr != nil {
 			log.Fatalf("storage backend configuration error: %v", storeErr)
 		}
+		bootstrap.SetStartupStorageHealth(storageHealth)
 		if storageHealth.OverallStatus() != "ok" {
 			log.Printf(
 				"storage backend degraded: mode=%s state_backend=%s state_error=%q queue_backend=%s queue_error=%q",
@@ -107,11 +137,34 @@ func main() {
 		)
 		handler.SetHeadlessModeRedirectURL(os.Getenv("STATOCYST_HEADLESS_MODE_URL"))
 		handler.SetStorageHealth(storageHealth)
+		setStartupPhase("router_ready")
+		readyAt := time.Now().UTC()
+		phaseElapsed := readyAt.Sub(phaseStartedAt).Milliseconds()
+		if phaseElapsed < 0 {
+			phaseElapsed = 0
+		}
+		phaseDurationsMS[currentPhase] = phaseElapsed
+		totalMS := readyAt.Sub(startupStartedAt).Milliseconds()
+		if totalMS < 0 {
+			totalMS = 0
+		}
+		startupSummary := map[string]any{
+			"boot_status": "ready",
+			"startup": map[string]any{
+				"started_at":         startupStartedAt,
+				"ready_at":           readyAt,
+				"total_ms":           totalMS,
+				"phase_durations_ms": phaseDurationsMS,
+				"last_phase":         currentPhase,
+				"last_phase_started": phaseStartedAt,
+			},
+		}
+		handler.SetStartupSummary(startupSummary)
 		bootstrap.SetReady(api.NewRouterWithOptions(handler, api.RouterOptions{
 			EnableLocalCORS:    enableLocalCORS,
 			AllowedCORSOrigins: allowedCORSOrigins,
 		}))
-		log.Printf("statocyst runtime ready")
+		log.Printf("statocyst runtime ready total_ms=%d phase_durations_ms=%v", totalMS, phaseDurationsMS)
 	}()
 
 	log.Printf("statocyst listening on %s", listener.Addr().String())

@@ -15,6 +15,7 @@ import (
 	"path"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,9 @@ const (
 	defaultS3StatePersistTimeout = 8 * time.Second
 	// Best-effort metrics/status writes should not block request paths for long.
 	defaultS3StateBestEffortPersistTimeout = 750 * time.Millisecond
+	defaultS3StateHydrationTimeout         = 20 * time.Second
+	defaultS3StateListConcurrency          = 6
+	defaultS3StateGetConcurrency           = 24
 )
 
 type s3StateStore struct {
@@ -45,11 +49,16 @@ type s3StateStore struct {
 	persistTimeout time.Duration
 	// bestEffortPersistTimeout bounds persist for fire-and-forget style writes.
 	bestEffortPersistTimeout time.Duration
+	hydrationTimeout         time.Duration
+	listConcurrency          int
+	getConcurrency           int
 
 	persistMu sync.Mutex
 	// persistedObjects tracks the last successfully persisted object bodies by key.
 	// It lets us write only changed keys instead of full-prefix rewrites.
 	persistedObjects map[string][]byte
+	// hydrationPrefetch is populated only while loadFromS3 is running to avoid repeated list/get calls.
+	hydrationPrefetch map[string]map[string][]byte
 }
 
 type s3StateListBucketResult struct {
@@ -180,6 +189,9 @@ func NewS3StateStoreFromEnv() (*s3StateStore, error) {
 	pathStyleRaw := strings.TrimSpace(os.Getenv("STATOCYST_STATE_S3_PATH_STYLE"))
 	accessKeyID := strings.TrimSpace(os.Getenv("STATOCYST_STATE_S3_ACCESS_KEY_ID"))
 	secretAccessKey := strings.TrimSpace(os.Getenv("STATOCYST_STATE_S3_SECRET_ACCESS_KEY"))
+	hydrationTimeout := parseDurationSecondsEnv("STATOCYST_S3_HYDRATION_TIMEOUT_SEC", defaultS3StateHydrationTimeout)
+	listConcurrency := parsePositiveIntEnv("STATOCYST_S3_HYDRATION_LIST_CONCURRENCY", defaultS3StateListConcurrency)
+	getConcurrency := parsePositiveIntEnv("STATOCYST_S3_HYDRATION_GET_CONCURRENCY", defaultS3StateGetConcurrency)
 
 	if endpoint == "" {
 		return nil, fmt.Errorf("STATOCYST_STATE_S3_ENDPOINT is required for s3 state backend")
@@ -209,7 +221,7 @@ func NewS3StateStoreFromEnv() (*s3StateStore, error) {
 
 	store := &s3StateStore{
 		MemoryStore:              NewMemoryStore(),
-		httpClient:               &http.Client{Timeout: 10 * time.Second},
+		httpClient:               newS3HTTPClient(10 * time.Second),
 		endpoint:                 strings.TrimSuffix(endpoint, "/"),
 		bucket:                   bucket,
 		region:                   region,
@@ -218,11 +230,44 @@ func NewS3StateStoreFromEnv() (*s3StateStore, error) {
 		signer:                   newS3Signer(accessKeyID, secretAccessKey, region),
 		persistTimeout:           defaultS3StatePersistTimeout,
 		bestEffortPersistTimeout: defaultS3StateBestEffortPersistTimeout,
+		hydrationTimeout:         hydrationTimeout,
+		listConcurrency:          listConcurrency,
+		getConcurrency:           getConcurrency,
 	}
-	if err := store.loadFromS3(context.Background()); err != nil {
+	loadCtx := context.Background()
+	if store.hydrationTimeout > 0 {
+		var cancel context.CancelFunc
+		loadCtx, cancel = context.WithTimeout(loadCtx, store.hydrationTimeout)
+		defer cancel()
+	}
+	if err := store.loadFromS3(loadCtx); err != nil {
 		return nil, err
 	}
 	return store, nil
+}
+
+func parseDurationSecondsEnv(name string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	seconds, err := time.ParseDuration(raw + "s")
+	if err != nil || seconds <= 0 {
+		return fallback
+	}
+	return seconds
+}
+
+func parsePositiveIntEnv(name string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
 }
 
 func (s *s3StateStore) UpsertHuman(provider, subject, email string, emailVerified bool, now time.Time, idFactory func() (string, error)) (model.Human, error) {
@@ -1002,6 +1047,33 @@ func (s *s3StateStore) loadFromS3(ctx context.Context) error {
 	pRemoteOrgTrusts := s.prefixed("state/remote_org_trusts")
 	pRemoteAgentTrusts := s.prefixed("state/remote_agent_trusts")
 	pPeerOutbounds := s.prefixed("state/peer_outbounds")
+	prefetched, err := s.prefetchPrefixes(ctx, []string{
+		pHumans,
+		pAgents,
+		pOrgs,
+		pMemberships,
+		pInvites,
+		pAccessKeys,
+		pBinds,
+		pOrgTrusts,
+		pAgentTrusts,
+		pStats,
+		pStatsDaily,
+		pAudit,
+		pPersonalOrgs,
+		pQueues,
+		pMessages,
+		pMessageLeases,
+		pPeers,
+		pRemoteOrgTrusts,
+		pRemoteAgentTrusts,
+		pPeerOutbounds,
+	})
+	if err != nil {
+		return err
+	}
+	s.hydrationPrefetch = prefetched
+	defer func() { s.hydrationPrefetch = nil }()
 
 	if err := s.loadTypedObjects(ctx, pHumans, func(key string, body []byte) error {
 		var value model.Human
@@ -1451,7 +1523,144 @@ func rebuildStateIndexesLocked(mem *MemoryStore) {
 	}
 }
 
+func (s *s3StateStore) prefetchPrefixes(ctx context.Context, prefixes []string) (map[string]map[string][]byte, error) {
+	if len(prefixes) == 0 {
+		return map[string]map[string][]byte{}, nil
+	}
+	listConcurrency := s.listConcurrency
+	if listConcurrency <= 0 {
+		listConcurrency = defaultS3StateListConcurrency
+	}
+	getConcurrency := s.getConcurrency
+	if getConcurrency <= 0 {
+		getConcurrency = defaultS3StateGetConcurrency
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	setErr := func(err error, firstErr *error, mu *sync.Mutex) {
+		if err == nil {
+			return
+		}
+		mu.Lock()
+		if *firstErr == nil {
+			*firstErr = err
+			cancel()
+		}
+		mu.Unlock()
+	}
+
+	keysByPrefix := make(map[string][]string, len(prefixes))
+	var (
+		firstErr error
+		errMu    sync.Mutex
+		keysMu   sync.Mutex
+		listWG   sync.WaitGroup
+	)
+	prefixJobs := make(chan string)
+	for i := 0; i < listConcurrency; i++ {
+		listWG.Add(1)
+		go func() {
+			defer listWG.Done()
+			for prefix := range prefixJobs {
+				if ctx.Err() != nil {
+					return
+				}
+				keys, err := s.listKeys(ctx, prefix+"/")
+				if err != nil {
+					setErr(fmt.Errorf("list objects %s: %w", prefix, err), &firstErr, &errMu)
+					continue
+				}
+				keysMu.Lock()
+				keysByPrefix[prefix] = keys
+				keysMu.Unlock()
+			}
+		}()
+	}
+prefixLoop:
+	for _, prefix := range prefixes {
+		select {
+		case prefixJobs <- prefix:
+		case <-ctx.Done():
+			break prefixLoop
+		}
+	}
+	close(prefixJobs)
+	listWG.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+
+	objectsByPrefix := make(map[string]map[string][]byte, len(prefixes))
+	for _, prefix := range prefixes {
+		objectsByPrefix[prefix] = make(map[string][]byte)
+	}
+	type getJob struct {
+		prefix string
+		key    string
+	}
+	getJobs := make(chan getJob)
+	var (
+		getWG sync.WaitGroup
+		objMu sync.Mutex
+	)
+	for i := 0; i < getConcurrency; i++ {
+		getWG.Add(1)
+		go func() {
+			defer getWG.Done()
+			for job := range getJobs {
+				if ctx.Err() != nil {
+					return
+				}
+				body, found, err := s.getObject(ctx, job.key)
+				if err != nil {
+					setErr(fmt.Errorf("get object %s: %w", job.key, err), &firstErr, &errMu)
+					continue
+				}
+				if !found {
+					continue
+				}
+				objMu.Lock()
+				objectsByPrefix[job.prefix][job.key] = body
+				objMu.Unlock()
+			}
+		}()
+	}
+getLoop:
+	for _, prefix := range prefixes {
+		keys := keysByPrefix[prefix]
+		for _, key := range keys {
+			select {
+			case getJobs <- getJob{prefix: prefix, key: key}:
+			case <-ctx.Done():
+				break getLoop
+			}
+		}
+	}
+	close(getJobs)
+	getWG.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return objectsByPrefix, nil
+}
+
 func (s *s3StateStore) loadTypedObjects(ctx context.Context, prefix string, fn func(key string, body []byte) error) error {
+	if prefetched := s.hydrationPrefetch; prefetched != nil {
+		objects := prefetched[prefix]
+		keys := make([]string, 0, len(objects))
+		for key := range objects {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if err := fn(key, objects[key]); err != nil {
+				return fmt.Errorf("decode %s: %w", key, err)
+			}
+		}
+		return nil
+	}
 	keys, err := s.listKeys(ctx, prefix+"/")
 	if err != nil {
 		return err

@@ -23,6 +23,9 @@ const (
 	defaultStateS3Prefix    = "statocyst-state"
 	defaultQueueS3Region    = "us-east-1"
 	defaultQueueS3Prefix    = "statocyst-queue"
+	defaultHydrationTimeout = "20"
+	defaultHydrationListC   = "6"
+	defaultHydrationGetC    = "24"
 )
 
 type launchDiagnostic struct {
@@ -209,6 +212,9 @@ func collectLaunchDiagnostics(lookup func(string) (string, bool)) ([]launchDiagn
 			warnIfUnset(lookup, "STATOCYST_STATE_S3_REGION", defaultStateS3Region, "S3 state requests will use the default signing region"),
 			warnIfUnset(lookup, "STATOCYST_STATE_S3_PREFIX", defaultStateS3Prefix, "state objects will be stored under the default prefix"),
 			warnIfUnset(lookup, "STATOCYST_STATE_S3_PATH_STYLE", "true", "state S3 requests will default to path-style addressing"),
+			warnIfUnset(lookup, "STATOCYST_S3_HYDRATION_TIMEOUT_SEC", defaultHydrationTimeout, "state hydration will use the default startup timeout"),
+			warnIfUnset(lookup, "STATOCYST_S3_HYDRATION_LIST_CONCURRENCY", defaultHydrationListC, "state hydration list operations will use default parallelism"),
+			warnIfUnset(lookup, "STATOCYST_S3_HYDRATION_GET_CONCURRENCY", defaultHydrationGetC, "state hydration get operations will use default parallelism"),
 		)
 		requirePairedEnv(
 			lookup,

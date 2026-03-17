@@ -52,7 +52,15 @@ Canonical URI authority:
 Startup behavior:
 - `STATOCYST_STORAGE_STARTUP_MODE=strict` (default): startup fails if configured storage is invalid/unreachable.
 - `STATOCYST_STORAGE_STARTUP_MODE=degraded`: falls back to memory for failing backends and reports failures in `/health`.
-- HTTP listener starts before S3 hydration completes; use `/ping` for liveness and `/health` for readiness/dependencies.
+- HTTP listener starts before S3 hydration completes.
+  - Early routes while booting: `/ping`, `/health`, `/openapi.yaml`, `/openapi.md`, `/v1/ui/config`, `/v1/me`.
+  - `/v1/me` serves identity-only startup payload while booting; writes remain unavailable until ready.
+  - Use `/ping` for liveness and `/health` for readiness/dependencies.
+
+S3 state hydration tuning:
+- `STATOCYST_S3_HYDRATION_TIMEOUT_SEC=20` (default): upper bound for strict startup hydration.
+- `STATOCYST_S3_HYDRATION_LIST_CONCURRENCY=6` (default): parallel list workers during hydration.
+- `STATOCYST_S3_HYDRATION_GET_CONCURRENCY=24` (default): parallel object fetch workers during hydration.
 
 ## Queue Backend
 
@@ -62,3 +70,4 @@ Startup behavior:
   - Optional: `STATOCYST_QUEUE_S3_REGION` (default `us-east-1`), `STATOCYST_QUEUE_S3_PREFIX` (default `statocyst-queue`), `STATOCYST_QUEUE_S3_PATH_STYLE=true`, `STATOCYST_QUEUE_S3_ACCESS_KEY_ID`, `STATOCYST_QUEUE_S3_SECRET_ACCESS_KEY`
   - Queue S3 config is independent from state S3 config.
   - Requests are SigV4-signed when key + secret are set; otherwise unsigned.
+  - In `strict` startup mode, statocyst now preflights queue bucket reachability before reporting ready.

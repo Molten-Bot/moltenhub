@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -143,6 +144,11 @@ func NewStoresFromEnvWithMode(mode StorageStartupMode) (ControlPlaneStore, Messa
 	var queueStore MessageQueueStore
 	if queueBackend == "s3" {
 		queue, queueErr := NewS3QueueStoreFromEnv()
+		if queueErr == nil {
+			if checker, ok := queue.(interface{ StartupCheck(context.Context) error }); ok {
+				queueErr = checker.StartupCheck(context.Background())
+			}
+		}
 		if queueErr != nil {
 			health.Queue.Healthy = false
 			health.Queue.Error = queueErr.Error()

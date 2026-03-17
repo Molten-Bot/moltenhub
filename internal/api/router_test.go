@@ -119,6 +119,32 @@ func TestHealthReportsDegradedStorageStatus(t *testing.T) {
 	}
 }
 
+func TestHealthIncludesStartupSummaryWhenProvided(t *testing.T) {
+	mem := store.NewMemoryStore()
+	waiters := longpoll.NewWaiters()
+	h := NewHandler(mem, mem, waiters, auth.NewDevHumanAuthProvider(), "https://hub.molten.bot", "", "", "", "", "molten.bot", true, 15*time.Minute, false)
+	h.SetStartupSummary(map[string]any{
+		"boot_status": "ready",
+		"startup": map[string]any{
+			"total_ms": 1234,
+		},
+	})
+	router := NewRouter(h)
+
+	health := doJSONRequest(t, router, http.MethodGet, "/health", nil, nil)
+	if health.Code != http.StatusOK {
+		t.Fatalf("expected /health 200, got %d %s", health.Code, health.Body.String())
+	}
+	payload := decodeJSONMap(t, health.Body.Bytes())
+	if got, _ := payload["boot_status"].(string); got != "ready" {
+		t.Fatalf("expected boot_status=ready, got %q payload=%v", got, payload)
+	}
+	startupObj, _ := payload["startup"].(map[string]any)
+	if startupObj == nil {
+		t.Fatalf("expected startup object in /health payload=%v", payload)
+	}
+}
+
 func TestHealthSanitizesBackendErrorDetails(t *testing.T) {
 	mem := store.NewMemoryStore()
 	waiters := longpoll.NewWaiters()
