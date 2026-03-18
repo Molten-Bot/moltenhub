@@ -3114,6 +3114,17 @@ func TestPublicSnapshotFiltersPrivateEntities(t *testing.T) {
 		t.Fatalf("expected alice metadata patch 200, got %d %s", privateAlice.Code, privateAlice.Body.String())
 	}
 
+	const bobImageURL = "https://example.com/humans/bob.png"
+	bobMetadata := doJSONRequest(t, router, http.MethodPatch, "/v1/me/metadata", map[string]any{
+		"metadata": map[string]any{
+			"public":    true,
+			"image_url": bobImageURL,
+		},
+	}, humanHeaders("bob", "bob@b.test"))
+	if bobMetadata.Code != http.StatusOK {
+		t.Fatalf("expected bob metadata patch 200, got %d %s", bobMetadata.Code, bobMetadata.Body.String())
+	}
+
 	publicSnap := doJSONRequest(t, router, http.MethodGet, "/v1/public/snapshot", nil, nil)
 	if publicSnap.Code != http.StatusOK {
 		t.Fatalf("expected public snapshot 200, got %d %s", publicSnap.Code, publicSnap.Body.String())
@@ -3146,6 +3157,13 @@ func TestPublicSnapshotFiltersPrivateEntities(t *testing.T) {
 	}
 	if gotURI, _ := human["uri"].(string); gotURI == "" {
 		t.Fatalf("expected public human uri, payload=%v", human)
+	}
+	humanMetadata, _ := human["metadata"].(map[string]any)
+	if gotImageURL, _ := humanMetadata["image_url"].(string); gotImageURL != bobImageURL {
+		t.Fatalf("expected public human metadata.image_url %q, got %q payload=%v", bobImageURL, gotImageURL, human)
+	}
+	if gotImage, _ := humanMetadata["image"].(string); gotImage != bobImageURL {
+		t.Fatalf("expected public human metadata.image %q, got %q payload=%v", bobImageURL, gotImage, human)
 	}
 
 	memberships, _ := snap["memberships"].([]any)
