@@ -32,6 +32,20 @@ function metadataPublic(raw) {
   return typeof value === "boolean" ? value : true;
 }
 
+function metadataImageURL(raw) {
+  const metadata = metadataFrom(raw);
+  const keys = ["image_url", "image", "avatar_url", "avatar", "photo_url", "imageurl"];
+  for (const key of keys) {
+    const value = metadata[key];
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed !== "") {
+      return trimmed;
+    }
+  }
+  return "";
+}
+
 function renderOrgs(memberships) {
   const target = UI.$("profileOrgs");
   target.innerHTML = "";
@@ -74,6 +88,7 @@ function renderProfile(me, orgs) {
   UI.$("profileJoined").textContent = daysAgoLabel(human?.created_at);
   UI.$("profileHandleInput").value = human?.handle || "";
   UI.$("profileIsPublic").checked = metadataPublic(human?.metadata);
+  UI.$("profileImageUrlInput").value = metadataImageURL(human?.metadata);
   renderOrgs(orgs?.data?.memberships);
 
   const isAdmin = Boolean(me?.data?.admin);
@@ -231,6 +246,7 @@ async function runInviteAction(inviteID, action) {
 async function saveProfile() {
   const handle = String(UI.$("profileHandleInput").value || "").trim();
   const isPublic = Boolean(UI.$("profileIsPublic").checked);
+  const imageURL = String(UI.$("profileImageUrlInput").value || "").trim();
   if (!handle) {
     setStatus("Handle is required.", true);
     return;
@@ -255,14 +271,22 @@ async function saveProfile() {
   }
 
   const currentMetadata = metadataFrom(profileRes?.data?.human?.metadata);
+  const nextMetadata = {
+    ...currentMetadata,
+    public: isPublic,
+  };
+  if (imageURL) {
+    nextMetadata.image_url = imageURL;
+    nextMetadata.image = imageURL;
+  } else {
+    delete nextMetadata.image_url;
+    delete nextMetadata.image;
+  }
   const metadataRes = await UI.req("/v1/me/metadata", "PATCH", {
-    metadata: {
-      ...currentMetadata,
-      public: isPublic,
-    },
+    metadata: nextMetadata,
   });
   if (metadataRes.status !== 200) {
-    setStatus("Handle updated, but visibility update failed.", true);
+    setStatus("Handle updated, but profile metadata update failed.", true);
     return;
   }
 

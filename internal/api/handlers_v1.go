@@ -1342,6 +1342,20 @@ func metadataPublicStrict(metadata map[string]any) bool {
 	return publicValue
 }
 
+func metadataStringAliasValue(metadata map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := metadata[key].(string)
+		if !ok {
+			continue
+		}
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 func snapshotMetadataPublicView(metadata map[string]any) map[string]any {
 	out := map[string]any{}
 	if publicValue, ok := metadata["public"].(bool); ok {
@@ -1353,11 +1367,10 @@ func snapshotMetadataPublicView(metadata map[string]any) map[string]any {
 			out["description"] = description
 		}
 	}
-	if image, ok := metadata["image"].(string); ok {
-		image = strings.TrimSpace(image)
-		if image != "" {
-			out["image"] = image
-		}
+	image := metadataStringAliasValue(metadata, "image_url", "image", "avatar_url", "avatar", "photo_url", "imageurl")
+	if image != "" {
+		out["image"] = image
+		out["image_url"] = image
 	}
 	return out
 }
