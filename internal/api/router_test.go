@@ -1552,6 +1552,9 @@ func TestMyAgentBindTokenCreateIncludesConnectPrompt(t *testing.T) {
 	if !strings.Contains(connectPrompt, "distinctive emoji") || !strings.Contains(connectPrompt, "\"agent_type\":\"<assistant-type>\"") {
 		t.Fatalf("expected connect prompt to require emoji/assistant type metadata setup, got %q", connectPrompt)
 	}
+	if !strings.Contains(connectPrompt, "\"llm\":\"<provider>/<model>@<version>\"") || !strings.Contains(connectPrompt, "\"harness\":\"<runtime-or-framework>@<version>\"") {
+		t.Fatalf("expected connect prompt to require llm/harness metadata setup, got %q", connectPrompt)
+	}
 	if !strings.Contains(connectPrompt, "self-signup flow") {
 		t.Fatalf("expected connect prompt to declare self-signup flow, got %q", connectPrompt)
 	}
@@ -1569,6 +1572,9 @@ func TestMyAgentBindTokenCreateIncludesConnectPrompt(t *testing.T) {
 	}
 	if !strings.Contains(connectPrompt, "metadata.profile_markdown") || !strings.Contains(connectPrompt, "metadata.hire_me") {
 		t.Fatalf("expected connect prompt to include directory metadata field reminders, got %q", connectPrompt)
+	}
+	if !strings.Contains(connectPrompt, "metadata.llm") || !strings.Contains(connectPrompt, "metadata.harness") {
+		t.Fatalf("expected connect prompt to include llm/harness metadata field reminders, got %q", connectPrompt)
 	}
 }
 
@@ -2571,6 +2577,9 @@ func TestAgentCapabilitiesAndSkillEndpoints(t *testing.T) {
 	if !strings.Contains(skillContent, "distinctive emoji") || !strings.Contains(skillContent, "\"agent_type\":\"<assistant-type>\"") {
 		t.Fatalf("expected onboarding skill to require emoji/assistant type metadata setup, got %q", skillContent)
 	}
+	if !strings.Contains(skillContent, "\"llm\":\"<provider>/<model>@<version>\"") || !strings.Contains(skillContent, "\"harness\":\"<runtime-or-framework>@<version>\"") {
+		t.Fatalf("expected onboarding skill to require llm/harness metadata setup, got %q", skillContent)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/agents/me/skill?format=markdown", nil)
 	req.Header.Set("Authorization", "Bearer "+tokenA)
@@ -2840,6 +2849,9 @@ func TestOpenAPIMarkdownHeaders(t *testing.T) {
 	if !strings.Contains(body, "metadata.profile_markdown") || !strings.Contains(body, "metadata.activities") || !strings.Contains(body, "metadata.hire_me") {
 		t.Fatalf("expected metadata directory fields in openapi markdown, got %q", body)
 	}
+	if !strings.Contains(body, "metadata.llm") || !strings.Contains(body, "metadata.harness") {
+		t.Fatalf("expected llm/harness metadata fields in openapi markdown, got %q", body)
+	}
 	if !strings.Contains(body, "copy-ready self-signup prompt") {
 		t.Fatalf("expected self-signup prompt contract text in openapi markdown, got %q", body)
 	}
@@ -3052,6 +3064,87 @@ func TestAdminSnapshotIncludesMessageRollups(t *testing.T) {
 	}
 	if orgAMetrics["outbox_messages"] != float64(1) || orgBMetrics["inbox_messages"] != float64(1) {
 		t.Fatalf("unexpected org rollups: orgA=%v orgB=%v", orgAMetrics, orgBMetrics)
+	}
+}
+
+func TestAgentMetadataLLMHarnessOptionalAndIncludedInAdminSnapshot(t *testing.T) {
+	router := newTestRouter()
+	_, _, tokenA, tokenB, _, _, agentUUIDA, agentUUIDB := setupTrustedAgents(t, router)
+
+	withoutFingerprint := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/me/metadata", map[string]any{
+		"metadata": map[string]any{
+			"profile_markdown": "# Agent A",
+			"activities":       []string{"bound to hub"},
+			"hire_me":          false,
+		},
+	}, map[string]string{"Authorization": "Bearer " + tokenA})
+	if withoutFingerprint.Code != http.StatusOK {
+		t.Fatalf("expected metadata patch without llm/harness 200, got %d %s", withoutFingerprint.Code, withoutFingerprint.Body.String())
+	}
+	withoutFingerprintPayload := decodeJSONMap(t, withoutFingerprint.Body.Bytes())
+	withoutFingerprintResult := requireAgentRuntimeSuccessEnvelope(t, withoutFingerprintPayload)
+	withoutFingerprintAgent, _ := withoutFingerprintResult["agent"].(map[string]any)
+	withoutFingerprintMetadata, _ := withoutFingerprintAgent["metadata"].(map[string]any)
+	if _, ok := withoutFingerprintMetadata["llm"]; ok {
+		t.Fatalf("expected llm to remain optional/absent when not provided, got %v", withoutFingerprintMetadata["llm"])
+	}
+	if _, ok := withoutFingerprintMetadata["harness"]; ok {
+		t.Fatalf("expected harness to remain optional/absent when not provided, got %v", withoutFingerprintMetadata["harness"])
+	}
+
+	expectedLLM := "openai/gpt-5.4@2026-03-01"
+	expectedHarness := "openai-codex@v1"
+	withFingerprint := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/me/metadata", map[string]any{
+		"metadata": map[string]any{
+			"agent_type": "assistant",
+			"llm":        expectedLLM,
+			"harness":    expectedHarness,
+		},
+	}, map[string]string{"Authorization": "Bearer " + tokenB})
+	if withFingerprint.Code != http.StatusOK {
+		t.Fatalf("expected metadata patch with llm/harness 200, got %d %s", withFingerprint.Code, withFingerprint.Body.String())
+	}
+
+	snap := doJSONRequest(t, router, http.MethodGet, "/v1/admin/snapshot", nil, humanHeaders("root", "root@molten.bot"))
+	if snap.Code != http.StatusOK {
+		t.Fatalf("snapshot failed: %d %s", snap.Code, snap.Body.String())
+	}
+	snapPayload := decodeJSONMap(t, snap.Body.Bytes())
+	snapshot, _ := snapPayload["snapshot"].(map[string]any)
+	agents, _ := snapshot["agents"].([]any)
+	if len(agents) == 0 {
+		t.Fatalf("expected snapshot.agents to be non-empty")
+	}
+
+	var agentARow map[string]any
+	var agentBRow map[string]any
+	for _, raw := range agents {
+		row, _ := raw.(map[string]any)
+		switch row["agent_uuid"] {
+		case agentUUIDA:
+			agentARow = row
+		case agentUUIDB:
+			agentBRow = row
+		}
+	}
+	if agentARow == nil || agentBRow == nil {
+		t.Fatalf("expected both agent rows in snapshot, got agents=%v", agents)
+	}
+
+	agentAMetadata, _ := agentARow["metadata"].(map[string]any)
+	if _, ok := agentAMetadata["llm"]; ok {
+		t.Fatalf("expected snapshot metadata.llm absent for agent without fingerprint, got %v", agentAMetadata["llm"])
+	}
+	if _, ok := agentAMetadata["harness"]; ok {
+		t.Fatalf("expected snapshot metadata.harness absent for agent without fingerprint, got %v", agentAMetadata["harness"])
+	}
+
+	agentBMetadata, _ := agentBRow["metadata"].(map[string]any)
+	if got, _ := agentBMetadata["llm"].(string); got != expectedLLM {
+		t.Fatalf("expected snapshot metadata.llm=%q, got %q metadata=%v", expectedLLM, got, agentBMetadata)
+	}
+	if got, _ := agentBMetadata["harness"].(string); got != expectedHarness {
+		t.Fatalf("expected snapshot metadata.harness=%q, got %q metadata=%v", expectedHarness, got, agentBMetadata)
 	}
 }
 

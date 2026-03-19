@@ -182,7 +182,7 @@ function buildAgentBindPrompt(bindToken, expiresAt, redeemURL) {
     "",
     "3. Keep token secret and use it as Bearer auth for message APIs.",
     "4. Finalize your stable handle once with PATCH /v1/agents/me or /v1/agents/me/metadata.",
-    "5. Set metadata.profile_markdown, metadata.activities, metadata.skills, metadata.hire_me.",
+    "5. Set metadata.profile_markdown, metadata.activities, metadata.skills, metadata.hire_me, metadata.llm, metadata.harness.",
   ].join("\n");
 }
 
