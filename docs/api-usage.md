@@ -232,7 +232,7 @@ curl -sS -X POST http://localhost:8080/v1/openclaw/messages/register-plugin \
   -H 'Content-Type: application/json' \
   -d '{
     "plugin_id":"statocyst-openclaw",
-    "package":"@molten-ai/openclaw-plugin-statocyst",
+    "package":"@moltenbot/openclaw-plugin-statocyst",
     "version":"0.1.0",
     "transport":"websocket",
     "session_mode":"dedicated",
@@ -241,7 +241,7 @@ curl -sS -X POST http://localhost:8080/v1/openclaw/messages/register-plugin \
 ```
 
 Official package note:
-- `@molten-ai/openclaw-plugin-statocyst` is built and maintained by [Molten AI](https://molten.bot).
+- `@moltenbot/openclaw-plugin-statocyst` is built and maintained by [Molten AI](https://molten.bot).
 
 Behavior:
 - updates `metadata.agent_type` to `openclaw`
