@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -1465,6 +1466,7 @@ func (s *MemoryStore) UpdateAgentMetadata(agentUUID string, metadata map[string]
 	if !isSuperAdmin && !s.canManageAgentLocked(agent, actorHumanID) {
 		return model.Agent{}, ErrUnauthorizedRole
 	}
+	previousMetadata := copyMetadata(agent.Metadata)
 	normalizedMetadata, err := mergeAndNormalizeAgentMetadata(agent.Metadata, metadata, now)
 	if err != nil {
 		return model.Agent{}, err
@@ -1473,6 +1475,9 @@ func (s *MemoryStore) UpdateAgentMetadata(agentUUID string, metadata map[string]
 	s.agents[agentUUID] = agent
 	summary := metadataAuditSummary(agent.Metadata)
 	summary["agent_id"] = agent.AgentID
+	for key, value := range agentMetadataChangeAuditSummary(previousMetadata, agent.Metadata) {
+		summary[key] = value
+	}
 	s.appendAuditLocked(agent.OrgID, actorHumanID, "agent", "set_metadata", agentUUID, summary, now)
 	return agent, nil
 }
@@ -1485,6 +1490,7 @@ func (s *MemoryStore) UpdateAgentMetadataSelf(agentUUID string, metadata map[str
 	if !ok || agent.Status == model.StatusRevoked {
 		return model.Agent{}, ErrAgentNotFound
 	}
+	previousMetadata := copyMetadata(agent.Metadata)
 	normalizedMetadata, err := mergeAndNormalizeAgentMetadata(agent.Metadata, metadata, now)
 	if err != nil {
 		return model.Agent{}, err
@@ -1493,6 +1499,9 @@ func (s *MemoryStore) UpdateAgentMetadataSelf(agentUUID string, metadata map[str
 	s.agents[agentUUID] = agent
 	summary := metadataAuditSummary(agent.Metadata)
 	summary["agent_id"] = agent.AgentID
+	for key, value := range agentMetadataChangeAuditSummary(previousMetadata, agent.Metadata) {
+		summary[key] = value
+	}
 	s.appendAuditLocked(agent.OrgID, "", "agent", "set_metadata_self", agentUUID, summary, now)
 	return agent, nil
 }
@@ -1596,6 +1605,156 @@ func metadataAuditSummary(metadata map[string]any) map[string]any {
 		summary["metadata_size_bytes"] = len(body)
 	}
 	return summary
+}
+
+func agentMetadataChangeAuditSummary(before, after map[string]any) map[string]any {
+	changedKeys := changedAgentMetadataKeys(before, after)
+	if len(changedKeys) == 0 {
+		return nil
+	}
+	out := map[string]any{
+		"changed_keys": changedKeys,
+	}
+	if containsString(changedKeys, "emoji") {
+		out["emoji_changed"] = true
+	}
+	if containsString(changedKeys, "bio") || containsString(changedKeys, model.AgentMetadataKeyProfile) {
+		out["bio_changed"] = true
+	}
+	if containsString(changedKeys, model.AgentMetadataKeyHireMe) {
+		out["hire_me_changed"] = true
+	}
+	if containsString(changedKeys, "public") {
+		out["public_changed"] = true
+	}
+	if containsString(changedKeys, model.AgentMetadataKeyActivities) {
+		out["activities_changed"] = true
+	}
+	if containsString(changedKeys, model.AgentMetadataKeySkills) {
+		beforeSkills := metadataSkillNames(before[model.AgentMetadataKeySkills])
+		afterSkills := metadataSkillNames(after[model.AgentMetadataKeySkills])
+		addedSkills, removedSkills := diffStringSets(beforeSkills, afterSkills)
+		if len(addedSkills) > 0 {
+			out["skills_added"] = addedSkills
+		}
+		if len(removedSkills) > 0 {
+			out["skills_removed"] = removedSkills
+		}
+	}
+	return out
+}
+
+func changedAgentMetadataKeys(before, after map[string]any) []string {
+	keys := map[string]struct{}{}
+	for key := range before {
+		if key == model.AgentMetadataKeySystemActivityLog {
+			continue
+		}
+		keys[key] = struct{}{}
+	}
+	for key := range after {
+		if key == model.AgentMetadataKeySystemActivityLog {
+			continue
+		}
+		keys[key] = struct{}{}
+	}
+	changed := make([]string, 0, len(keys))
+	for key := range keys {
+		if !reflect.DeepEqual(before[key], after[key]) {
+			changed = append(changed, key)
+		}
+	}
+	sort.Strings(changed)
+	return changed
+}
+
+func metadataSkillNames(raw any) []string {
+	if raw == nil {
+		return nil
+	}
+	outSet := map[string]struct{}{}
+	appendName := func(rawName any) {
+		name := strings.ToLower(strings.TrimSpace(stringValue(rawName)))
+		if name == "" {
+			return
+		}
+		outSet[name] = struct{}{}
+	}
+	switch typed := raw.(type) {
+	case []map[string]any:
+		for _, entry := range typed {
+			appendName(entry["name"])
+		}
+	case []any:
+		for _, value := range typed {
+			entry, ok := value.(map[string]any)
+			if !ok {
+				continue
+			}
+			appendName(entry["name"])
+		}
+	case map[string]any:
+		appendName(typed["name"])
+	}
+	if len(outSet) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(outSet))
+	for name := range outSet {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func diffStringSets(before, after []string) ([]string, []string) {
+	beforeSet := map[string]struct{}{}
+	for _, value := range before {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		beforeSet[trimmed] = struct{}{}
+	}
+	afterSet := map[string]struct{}{}
+	for _, value := range after {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		afterSet[trimmed] = struct{}{}
+	}
+
+	added := make([]string, 0)
+	for value := range afterSet {
+		if _, exists := beforeSet[value]; exists {
+			continue
+		}
+		added = append(added, value)
+	}
+	removed := make([]string, 0)
+	for value := range beforeSet {
+		if _, exists := afterSet[value]; exists {
+			continue
+		}
+		removed = append(removed, value)
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	return added, removed
+}
+
+func containsString(values []string, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.TrimSpace(value) == target {
+			return true
+		}
+	}
+	return false
 }
 
 func copyMetadata(metadata map[string]any) map[string]any {
@@ -2841,6 +3000,19 @@ func messageAuditDetails(message model.Message) map[string]any {
 	return details
 }
 
+func (s *MemoryStore) agentHasPriorOutboundMessageLocked(agentUUID string) bool {
+	agentUUID = strings.TrimSpace(agentUUID)
+	if agentUUID == "" {
+		return false
+	}
+	for _, record := range s.messageRecords {
+		if strings.TrimSpace(record.Message.FromAgentUUID) == agentUUID {
+			return true
+		}
+	}
+	return false
+}
+
 func buildHumanMessageMetricsLocked(humans map[string]model.Human, agents []model.AgentMessageMetrics) []model.HumanMessageMetrics {
 	byHumanID := make(map[string]*model.HumanMessageMetrics, len(humans))
 	typeTotals := make(map[string]map[string]*model.AgentTypeMessageRollup, len(humans))
@@ -3041,12 +3213,17 @@ func (s *MemoryStore) CreateOrGetMessageRecord(message model.Message, acceptedAt
 		AcceptedAt: acceptedAt,
 		UpdatedAt:  acceptedAt,
 	}
+	isFirstOutboundMessage := !s.agentHasPriorOutboundMessageLocked(message.FromAgentUUID)
 	s.messageRecords[message.MessageID] = record
 	if message.ClientMsgID != nil {
 		s.messageByClientMsg[messageClientKey(message.FromAgentUUID, *message.ClientMsgID)] = message.MessageID
 	}
 	if orgID := strings.TrimSpace(message.SenderOrgID); orgID != "" {
-		s.appendAuditLocked(orgID, "", "message", "publish", message.MessageID, messageAuditDetails(message), acceptedAt)
+		details := messageAuditDetails(message)
+		if isFirstOutboundMessage {
+			details["first_message"] = true
+		}
+		s.appendAuditLocked(orgID, "", "message", "publish", message.MessageID, details, acceptedAt)
 	}
 	return record, false, nil
 }
@@ -3537,6 +3714,7 @@ func (s *MemoryStore) createOrJoinTrustLocked(edgeType, leftInput, rightInput, a
 		}
 		s.agentTrusts[existingID] = edge
 		s.appendAuditLocked(actorSideOrg, actorHumanID, "trust_agent", "request", edge.EdgeID, map[string]any{
+			"agent_uuid":      strings.TrimSpace(leftInput),
 			"peer_agent_uuid": opposite(edge, leftInput),
 			"state":           edge.State,
 		}, now)
@@ -3565,6 +3743,7 @@ func (s *MemoryStore) createOrJoinTrustLocked(edgeType, leftInput, rightInput, a
 
 	_ = leftAgent
 	s.appendAuditLocked(actorSideOrg, actorHumanID, "trust_agent", "request", edge.EdgeID, map[string]any{
+		"agent_uuid":      strings.TrimSpace(leftInput),
 		"peer_agent_uuid": opposite(edge, leftInput),
 		"state":           edge.State,
 	}, now)
@@ -3582,7 +3761,11 @@ func (s *MemoryStore) approveTrustLocked(edgeType, edgeID, actorHumanID string, 
 		edge.State = model.StatusActive
 		edge.UpdatedAt = now
 		s.storeEdgeLocked(edgeType, edge)
-		s.appendAuditLocked(orgID, actorHumanID, "trust_"+edgeType, "approve", edge.EdgeID, map[string]any{"state": edge.State}, now)
+		s.appendAuditLocked(orgID, actorHumanID, "trust_"+edgeType, "approve", edge.EdgeID, map[string]any{
+			"state":           edge.State,
+			"agent_uuid":      edge.LeftID,
+			"peer_agent_uuid": edge.RightID,
+		}, now)
 		return edge, nil
 	}
 	if edge.State == model.StatusRevoked || edge.State == model.StatusBlocked {
@@ -3600,7 +3783,11 @@ func (s *MemoryStore) approveTrustLocked(edgeType, edgeID, actorHumanID string, 
 	}
 	edge.UpdatedAt = now
 	s.storeEdgeLocked(edgeType, edge)
-	s.appendAuditLocked(orgID, actorHumanID, "trust_"+edgeType, "approve", edge.EdgeID, map[string]any{"state": edge.State}, now)
+	s.appendAuditLocked(orgID, actorHumanID, "trust_"+edgeType, "approve", edge.EdgeID, map[string]any{
+		"state":           edge.State,
+		"agent_uuid":      edge.LeftID,
+		"peer_agent_uuid": edge.RightID,
+	}, now)
 	return edge, nil
 }
 
@@ -3614,7 +3801,10 @@ func (s *MemoryStore) blockTrustLocked(edgeType, edgeID, actorHumanID string, no
 	edge.RightApproved = false
 	edge.UpdatedAt = now
 	s.storeEdgeLocked(edgeType, edge)
-	s.appendAuditLocked(orgID, actorHumanID, "trust_"+edgeType, "block", edge.EdgeID, nil, now)
+	s.appendAuditLocked(orgID, actorHumanID, "trust_"+edgeType, "block", edge.EdgeID, map[string]any{
+		"agent_uuid":      edge.LeftID,
+		"peer_agent_uuid": edge.RightID,
+	}, now)
 	return edge, nil
 }
 
@@ -3628,7 +3818,10 @@ func (s *MemoryStore) revokeTrustLocked(edgeType, edgeID, actorHumanID string, n
 	edge.RightApproved = false
 	edge.UpdatedAt = now
 	s.storeEdgeLocked(edgeType, edge)
-	s.appendAuditLocked(orgID, actorHumanID, "trust_"+edgeType, "revoke", edge.EdgeID, nil, now)
+	s.appendAuditLocked(orgID, actorHumanID, "trust_"+edgeType, "revoke", edge.EdgeID, map[string]any{
+		"agent_uuid":      edge.LeftID,
+		"peer_agent_uuid": edge.RightID,
+	}, now)
 	return edge, nil
 }
 
@@ -3791,7 +3984,7 @@ func (s *MemoryStore) appendSystemActivityFromAuditLocked(event model.AuditEvent
 	if len(targets) == 0 {
 		return
 	}
-	activity := auditActivityLabel(event)
+	activity := s.auditActivityLabelLocked(event)
 	if strings.TrimSpace(activity) == "" {
 		return
 	}
@@ -3886,14 +4079,78 @@ func auditEventDetailString(details map[string]any, key string) string {
 	return stringValue(value)
 }
 
-func auditActivityLabel(event model.AuditEvent) string {
+func auditEventDetailBool(details map[string]any, key string) bool {
+	if len(details) == 0 {
+		return false
+	}
+	value, ok := details[key]
+	if !ok {
+		return false
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "1", "true", "yes":
+			return true
+		}
+	case int:
+		return typed != 0
+	case int64:
+		return typed != 0
+	case float64:
+		return typed != 0
+	}
+	return false
+}
+
+func auditEventDetailStringSlice(details map[string]any, key string) []string {
+	if len(details) == 0 {
+		return nil
+	}
+	value, ok := details[key]
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0)
+	appendValue := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		out = append(out, raw)
+	}
+	switch typed := value.(type) {
+	case []string:
+		for _, item := range typed {
+			appendValue(item)
+		}
+	case []any:
+		for _, item := range typed {
+			text, ok := item.(string)
+			if !ok {
+				continue
+			}
+			appendValue(text)
+		}
+	case string:
+		appendValue(typed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (s *MemoryStore) auditActivityLabelLocked(event model.AuditEvent) string {
 	switch event.Category {
 	case "agent":
 		switch event.Action {
 		case "register":
 			return "bound to hub"
 		case "set_metadata", "set_metadata_self":
-			return "updated profile"
+			return metadataAuditActivityLabel(event.Details)
 		case "finalize_handle_self":
 			return "finalized handle"
 		case "rotate_token":
@@ -3908,9 +4165,9 @@ func auditActivityLabel(event model.AuditEvent) string {
 	case "message":
 		switch event.Action {
 		case "publish", "publish_replay", "forward":
-			return "sent message"
+			return s.messagePublishActivityLabelLocked(event.Details)
 		case "lease", "ack":
-			return "received message"
+			return s.messageReceiveActivityLabelLocked(event.Details)
 		case "nack", "lease_expire":
 			return "message delivery retry"
 		case "publish_abort":
@@ -3926,6 +4183,92 @@ func auditActivityLabel(event model.AuditEvent) string {
 		return category
 	}
 	return category + ":" + action
+}
+
+func metadataAuditActivityLabel(details map[string]any) string {
+	changedKeys := auditEventDetailStringSlice(details, "changed_keys")
+	if len(changedKeys) == 1 {
+		switch changedKeys[0] {
+		case "emoji":
+			return "updated emoji"
+		case "bio", model.AgentMetadataKeyProfile:
+			return "updated bio"
+		case model.AgentMetadataKeySkills:
+			addedSkills := auditEventDetailStringSlice(details, "skills_added")
+			removedSkills := auditEventDetailStringSlice(details, "skills_removed")
+			if len(addedSkills) > 0 && len(removedSkills) == 0 {
+				return "added new skills"
+			}
+			if len(removedSkills) > 0 && len(addedSkills) == 0 {
+				return "removed skills"
+			}
+			return "updated skills"
+		case model.AgentMetadataKeyActivities:
+			return "posted activity"
+		case model.AgentMetadataKeyHireMe:
+			return "updated availability"
+		case "public":
+			return "updated visibility"
+		}
+	}
+	return "updated profile"
+}
+
+func (s *MemoryStore) messagePublishActivityLabelLocked(details map[string]any) string {
+	firstMessage := auditEventDetailBool(details, "first_message")
+	receiverHandle := s.publicAgentHandleLocked(auditEventDetailString(details, "to_agent_uuid"))
+	receiverPeerID := auditEventDetailString(details, "receiver_peer_id")
+	if receiverHandle != "" {
+		if firstMessage {
+			return "sent first message to " + receiverHandle
+		}
+		return "sent message to " + receiverHandle
+	}
+	if receiverPeerID != "" {
+		if firstMessage {
+			return "sent first message to peer"
+		}
+		return "sent message to peer"
+	}
+	if firstMessage {
+		return "sent first message"
+	}
+	return "sent message"
+}
+
+func (s *MemoryStore) messageReceiveActivityLabelLocked(details map[string]any) string {
+	senderHandle := s.publicAgentHandleLocked(auditEventDetailString(details, "from_agent_uuid"))
+	if senderHandle != "" {
+		return "received message from " + senderHandle
+	}
+	return "received message"
+}
+
+func (s *MemoryStore) publicAgentHandleLocked(agentUUID string) string {
+	agentUUID = strings.TrimSpace(agentUUID)
+	if agentUUID == "" {
+		return ""
+	}
+	agent, ok := s.agents[agentUUID]
+	if !ok || agent.Status != model.StatusActive {
+		return ""
+	}
+	if !metadataPublicStrict(agent.Metadata) {
+		return ""
+	}
+	return strings.TrimSpace(agent.Handle)
+}
+
+func metadataPublicStrict(metadata map[string]any) bool {
+	raw, ok := metadata["public"]
+	if !ok {
+		return false
+	}
+	publicValue, ok := raw.(bool)
+	if !ok {
+		return false
+	}
+	return publicValue
 }
 
 func (s *MemoryStore) ensureOrgStatsLocked(orgID string) model.OrgStats {
