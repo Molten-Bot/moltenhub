@@ -3110,6 +3110,50 @@ func TestAgentMeMetadataPatchMergesAndNullDeletes(t *testing.T) {
 	}
 }
 
+func hasSystemActivity(log []any, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	for _, raw := range log {
+		row, _ := raw.(map[string]any)
+		if row == nil {
+			continue
+		}
+		source, _ := row["source"].(string)
+		if strings.TrimSpace(source) != "system" {
+			continue
+		}
+		activity, _ := row["activity"].(string)
+		if strings.TrimSpace(activity) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSystemActivityContaining(log []any, fragment string) bool {
+	fragment = strings.TrimSpace(strings.ToLower(fragment))
+	if fragment == "" {
+		return false
+	}
+	for _, raw := range log {
+		row, _ := raw.(map[string]any)
+		if row == nil {
+			continue
+		}
+		source, _ := row["source"].(string)
+		if strings.TrimSpace(source) != "system" {
+			continue
+		}
+		activity, _ := row["activity"].(string)
+		if strings.Contains(strings.ToLower(strings.TrimSpace(activity)), fragment) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestAgentSystemActivityLogIsAppendOnlyAndReadOnly(t *testing.T) {
 	router := newTestRouter()
 	_, _, tokenA, tokenB, _, _, _, agentUUIDB := setupTrustedAgents(t, router)
@@ -3133,39 +3177,6 @@ func TestAgentSystemActivityLogIsAppendOnlyAndReadOnly(t *testing.T) {
 	forgedMetadata, _ := forgedAgent["metadata"].(map[string]any)
 	if _, exists := forgedMetadata[model.AgentMetadataKeySystemActivityLog]; exists {
 		t.Fatalf("expected internal system activity key to be hidden from metadata response, got %v", forgedMetadata[model.AgentMetadataKeySystemActivityLog])
-	}
-
-	hasSystemActivity := func(log []any, target string) bool {
-		target = strings.TrimSpace(target)
-		for _, raw := range log {
-			row, _ := raw.(map[string]any)
-			if row == nil {
-				continue
-			}
-			activity, _ := row["activity"].(string)
-			if strings.TrimSpace(activity) != target {
-				continue
-			}
-			source, _ := row["source"].(string)
-			if source == "system" {
-				return true
-			}
-		}
-		return false
-	}
-	hasActivityText := func(log []any, target string) bool {
-		target = strings.TrimSpace(target)
-		for _, raw := range log {
-			row, _ := raw.(map[string]any)
-			if row == nil {
-				continue
-			}
-			activity, _ := row["activity"].(string)
-			if strings.TrimSpace(activity) == target {
-				return true
-			}
-		}
-		return false
 	}
 
 	readA := doJSONRequest(t, router, http.MethodGet, "/v1/agents/me", nil, headersA)
@@ -3210,8 +3221,8 @@ func TestAgentSystemActivityLogIsAppendOnlyAndReadOnly(t *testing.T) {
 	readAAfterResult := requireAgentRuntimeSuccessEnvelope(t, readAAfterPayload)
 	readAAfterAgent, _ := readAAfterResult["agent"].(map[string]any)
 	readAAfterLog, _ := readAAfterAgent["activity_log"].([]any)
-	if !hasSystemActivity(readAAfterLog, "sent message") {
-		t.Fatalf("expected sender activity_log to include system 'sent message' entry, got %v", readAAfterLog)
+	if !hasSystemActivity(readAAfterLog, "sent first message") && !hasSystemActivity(readAAfterLog, "sent message") {
+		t.Fatalf("expected sender activity_log to include system send entry, got %v", readAAfterLog)
 	}
 
 	readBAfter := doJSONRequest(t, router, http.MethodGet, "/v1/agents/me", nil, headersB)
@@ -3222,8 +3233,94 @@ func TestAgentSystemActivityLogIsAppendOnlyAndReadOnly(t *testing.T) {
 	readBAfterResult := requireAgentRuntimeSuccessEnvelope(t, readBAfterPayload)
 	readBAfterAgent, _ := readBAfterResult["agent"].(map[string]any)
 	readBAfterLog, _ := readBAfterAgent["activity_log"].([]any)
-	if !hasSystemActivity(readBAfterLog, "received message") {
-		t.Fatalf("expected receiver activity_log to include system 'received message' entry, got %v", readBAfterLog)
+	if !hasSystemActivityContaining(readBAfterLog, "received message") {
+		t.Fatalf("expected receiver activity_log to include system receive entry, got %v", readBAfterLog)
+	}
+}
+
+func TestAgentSystemActivityLogMetadataWriteLabels(t *testing.T) {
+	router := newTestRouter()
+	_, _, tokenA, _, _, _, _, _ := setupTrustedAgents(t, router)
+	headersA := map[string]string{"Authorization": "Bearer " + tokenA}
+
+	emojiPatch := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/me/metadata", map[string]any{
+		"metadata": map[string]any{
+			"emoji": "🤖",
+		},
+	}, headersA)
+	if emojiPatch.Code != http.StatusOK {
+		t.Fatalf("emoji patch failed: %d %s", emojiPatch.Code, emojiPatch.Body.String())
+	}
+
+	bioPatch := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/me/metadata", map[string]any{
+		"metadata": map[string]any{
+			"profile_markdown": "## Bio\nBuilds systems.",
+		},
+	}, headersA)
+	if bioPatch.Code != http.StatusOK {
+		t.Fatalf("bio patch failed: %d %s", bioPatch.Code, bioPatch.Body.String())
+	}
+
+	skillsPatch := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/me/metadata", map[string]any{
+		"metadata": map[string]any{
+			"skills": []map[string]any{
+				{"name": "emoji.update", "description": "Update emoji metadata safely."},
+			},
+		},
+	}, headersA)
+	if skillsPatch.Code != http.StatusOK {
+		t.Fatalf("skills patch failed: %d %s", skillsPatch.Code, skillsPatch.Body.String())
+	}
+
+	readResp := doJSONRequest(t, router, http.MethodGet, "/v1/agents/me", nil, headersA)
+	if readResp.Code != http.StatusOK {
+		t.Fatalf("read agent failed: %d %s", readResp.Code, readResp.Body.String())
+	}
+	payload := decodeJSONMap(t, readResp.Body.Bytes())
+	result := requireAgentRuntimeSuccessEnvelope(t, payload)
+	agent, _ := result["agent"].(map[string]any)
+	log, _ := agent["activity_log"].([]any)
+	if !hasSystemActivity(log, "updated emoji") {
+		t.Fatalf("expected activity_log to include 'updated emoji', got %v", log)
+	}
+	if !hasSystemActivity(log, "updated bio") {
+		t.Fatalf("expected activity_log to include 'updated bio', got %v", log)
+	}
+	if !hasSystemActivity(log, "added new skills") {
+		t.Fatalf("expected activity_log to include 'added new skills', got %v", log)
+	}
+}
+
+func TestAgentSystemActivityLogIncludesPublicReceiverHandle(t *testing.T) {
+	router := newTestRouter()
+	_, _, tokenA, tokenB, _, _, _, agentUUIDB := setupTrustedAgents(t, router)
+	headersA := map[string]string{"Authorization": "Bearer " + tokenA}
+	headersB := map[string]string{"Authorization": "Bearer " + tokenB}
+
+	makePublic := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/me/metadata", map[string]any{
+		"metadata": map[string]any{
+			"public": true,
+		},
+	}, headersB)
+	if makePublic.Code != http.StatusOK {
+		t.Fatalf("expected receiver public metadata patch 200, got %d %s", makePublic.Code, makePublic.Body.String())
+	}
+
+	pub := publish(t, router, tokenA, agentUUIDB, "public-handle-message")
+	if pub.Code != http.StatusAccepted {
+		t.Fatalf("publish failed: %d %s", pub.Code, pub.Body.String())
+	}
+
+	readResp := doJSONRequest(t, router, http.MethodGet, "/v1/agents/me", nil, headersA)
+	if readResp.Code != http.StatusOK {
+		t.Fatalf("sender read failed: %d %s", readResp.Code, readResp.Body.String())
+	}
+	payload := decodeJSONMap(t, readResp.Body.Bytes())
+	result := requireAgentRuntimeSuccessEnvelope(t, payload)
+	agent, _ := result["agent"].(map[string]any)
+	log, _ := agent["activity_log"].([]any)
+	if !hasSystemActivityContaining(log, "to agent-b") {
+		t.Fatalf("expected sender activity to include public receiver handle, got %v", log)
 	}
 }
 
@@ -3919,6 +4016,75 @@ func TestPublicSnapshotFiltersPrivateEntities(t *testing.T) {
 	owner, _ := agent["owner"].(map[string]any)
 	if gotOwnerID, _ := owner["human_id"].(string); gotOwnerID != bobHumanID {
 		t.Fatalf("expected public agent owner.human_id %q, got %q payload=%v", bobHumanID, gotOwnerID, payload)
+	}
+}
+
+func TestPublicSnapshotIncludesSanitizedAgentActivityLog(t *testing.T) {
+	router := newTestRouter()
+	_, _, tokenA, tokenB, _, _, _, agentUUIDB := setupTrustedAgents(t, router)
+
+	makeReceiverPublic := doJSONRequest(t, router, http.MethodPatch, "/v1/agents/me/metadata", map[string]any{
+		"metadata": map[string]any{
+			"public": true,
+		},
+	}, map[string]string{"Authorization": "Bearer " + tokenB})
+	if makeReceiverPublic.Code != http.StatusOK {
+		t.Fatalf("expected receiver public patch 200, got %d %s", makeReceiverPublic.Code, makeReceiverPublic.Body.String())
+	}
+
+	pub := publish(t, router, tokenA, agentUUIDB, "public-snapshot-activity")
+	if pub.Code != http.StatusAccepted {
+		t.Fatalf("publish failed: %d %s", pub.Code, pub.Body.String())
+	}
+
+	publicSnap := doJSONRequest(t, router, http.MethodGet, "/v1/public/snapshot", nil, nil)
+	if publicSnap.Code != http.StatusOK {
+		t.Fatalf("expected public snapshot 200, got %d %s", publicSnap.Code, publicSnap.Body.String())
+	}
+	payload := decodeJSONMap(t, publicSnap.Body.Bytes())
+	snap, _ := payload["snapshot"].(map[string]any)
+	agents, _ := snap["agents"].([]any)
+
+	var senderAgent map[string]any
+	for _, raw := range agents {
+		agent, _ := raw.(map[string]any)
+		if agent == nil {
+			continue
+		}
+		handle, _ := agent["handle"].(string)
+		if strings.TrimSpace(handle) == "agent-a" {
+			senderAgent = agent
+			break
+		}
+	}
+	if senderAgent == nil {
+		t.Fatalf("expected sender agent-a in public snapshot, got agents=%v", agents)
+	}
+
+	log, _ := senderAgent["activity_log"].([]any)
+	if len(log) == 0 {
+		t.Fatalf("expected public snapshot sender activity_log entries, got sender=%v", senderAgent)
+	}
+	if !hasActivityText(log, "sent first message to agent-b") && !hasActivityText(log, "sent message to agent-b") {
+		t.Fatalf("expected sender public activity_log to include receiver handle when public, got %v", log)
+	}
+	for _, raw := range log {
+		entry, _ := raw.(map[string]any)
+		if entry == nil {
+			continue
+		}
+		if _, exists := entry["event_id"]; exists {
+			t.Fatalf("expected sanitized public activity_log without event_id, got %v", entry)
+		}
+		if _, exists := entry["subject_id"]; exists {
+			t.Fatalf("expected sanitized public activity_log without subject_id, got %v", entry)
+		}
+		if _, exists := entry["category"]; exists {
+			t.Fatalf("expected sanitized public activity_log without category, got %v", entry)
+		}
+		if _, exists := entry["action"]; exists {
+			t.Fatalf("expected sanitized public activity_log without action, got %v", entry)
+		}
 	}
 }
 

@@ -1472,6 +1472,32 @@ func agentSystemActivityLog(metadata map[string]any) []map[string]any {
 	return out
 }
 
+func publicAgentSystemActivityLog(metadata map[string]any) []map[string]any {
+	fullLog := agentSystemActivityLog(metadata)
+	if len(fullLog) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(fullLog))
+	for _, entry := range fullLog {
+		activity := metadataStringAliasValue(entry, "activity")
+		if activity == "" {
+			continue
+		}
+		row := map[string]any{
+			"activity": activity,
+			"source":   "system",
+		}
+		if at := metadataStringAliasValue(entry, "at"); at != "" {
+			row["at"] = at
+		}
+		out = append(out, row)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func (h *Handler) handleEntitiesMetadata(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w)
@@ -1546,6 +1572,9 @@ func (h *Handler) handleEntitiesMetadata(w http.ResponseWriter, r *http.Request)
 		}
 		if metadata := entityMetadataForRender(agent.Metadata); len(metadata) > 0 {
 			row["metadata"] = metadata
+		}
+		if activityLog := publicAgentSystemActivityLog(agent.Metadata); len(activityLog) > 0 {
+			row["activity_log"] = activityLog
 		}
 		agents[key] = row
 	}
@@ -1699,6 +1728,9 @@ func (h *Handler) handlePublicSnapshot(w http.ResponseWriter, r *http.Request) {
 			"org_id":     agent.OrgID,
 			"status":     agent.Status,
 			"metadata":   snapshotMetadataPublicView(agent.Metadata),
+		}
+		if activityLog := publicAgentSystemActivityLog(agent.Metadata); len(activityLog) > 0 {
+			row["activity_log"] = activityLog
 		}
 		if owner := agentOwnerPayload(agent); owner != nil {
 			row["owner"] = owner
