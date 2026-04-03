@@ -202,12 +202,22 @@ func (h *Handler) publishFromAgent(ctx context.Context, senderAgentUUID string, 
 			}
 			record, replay, err := h.control.CreateOrGetMessageRecord(message, message.CreatedAt)
 			if err != nil {
+				summary := stateRuntimeFailureSummary("message register", err)
+				h.setStateRuntimeError(summary)
+				log.Printf(
+					"publish register message failed: from_agent_uuid=%s to_agent_uri=%s message_id=%s err=%v",
+					senderAgentUUID,
+					req.ToAgentURI,
+					messageID,
+					err,
+				)
 				return nil, &runtimeHandlerError{
 					status:  http.StatusInternalServerError,
 					code:    "store_error",
 					message: "failed to register message",
 				}
 			}
+			h.clearStateRuntimeError()
 			if replay {
 				return publishResponse(record, true), nil
 			}
@@ -337,12 +347,22 @@ func (h *Handler) publishFromAgent(ctx context.Context, senderAgentUUID string, 
 
 	record, replay, err := h.control.CreateOrGetMessageRecord(message, message.CreatedAt)
 	if err != nil {
+		summary := stateRuntimeFailureSummary("message register", err)
+		h.setStateRuntimeError(summary)
+		log.Printf(
+			"publish register message failed: from_agent_uuid=%s to_agent_uuid=%s message_id=%s err=%v",
+			senderAgentUUID,
+			targetAgent.AgentUUID,
+			messageID,
+			err,
+		)
 		return nil, &runtimeHandlerError{
 			status:  http.StatusInternalServerError,
 			code:    "store_error",
 			message: "failed to register message",
 		}
 	}
+	h.clearStateRuntimeError()
 	if replay {
 		return publishResponse(record, true), nil
 	}
