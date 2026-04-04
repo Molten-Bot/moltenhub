@@ -529,6 +529,7 @@ func (h *Handler) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	if health.StartupMode == "" {
 		health = store.DefaultStorageHealthStatus()
 	}
+	stateRuntimeErr, queueRuntimeErr := h.currentRuntimeErrors()
 
 	statePayload := map[string]any{
 		"backend": health.State.Backend,
@@ -536,6 +537,12 @@ func (h *Handler) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	}
 	if stateErr := store.SanitizeErrorText(health.State.Error); stateErr != "" {
 		statePayload["error"] = stateErr
+	}
+	if stateErrDetail := store.SanitizeErrorDetailText(health.State.Error); stateErrDetail != "" {
+		statePayload["error_detail"] = stateErrDetail
+	}
+	if stateRuntime := sanitizeRuntimeHealthError(stateRuntimeErr); stateRuntime != "" {
+		statePayload["runtime_error"] = stateRuntime
 	}
 
 	queuePayload := map[string]any{
@@ -553,6 +560,12 @@ func (h *Handler) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	}
 	if queueErr := store.SanitizeErrorText(health.Queue.Error); queueErr != "" {
 		queuePayload["error"] = queueErr
+	}
+	if queueErrDetail := store.SanitizeErrorDetailText(health.Queue.Error); queueErrDetail != "" {
+		queuePayload["error_detail"] = queueErrDetail
+	}
+	if queueRuntime := sanitizeRuntimeHealthError(queueRuntimeErr); queueRuntime != "" {
+		queuePayload["runtime_error"] = queueRuntime
 	}
 
 	payload := map[string]any{
@@ -604,6 +617,12 @@ func (h *Handler) currentStorageHealth() store.StorageHealthStatus {
 		}
 	}
 	return health
+}
+
+func (h *Handler) currentRuntimeErrors() (string, string) {
+	h.storageHealthMu.RLock()
+	defer h.storageHealthMu.RUnlock()
+	return strings.TrimSpace(h.stateRuntimeError), strings.TrimSpace(h.queueRuntimeError)
 }
 
 func (h *Handler) SetStartupSummary(summary map[string]any) {
@@ -674,6 +693,21 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 		encoded = pruned
 	}
 	_ = json.NewEncoder(w).Encode(encoded)
+}
+
+func sanitizeRuntimeHealthError(msg string) string {
+	normalized := strings.Join(strings.Fields(strings.TrimSpace(msg)), " ")
+	if normalized == "" {
+		return ""
+	}
+	if strings.Contains(normalized, "\n") ||
+		strings.Contains(normalized, "http://") ||
+		strings.Contains(normalized, "https://") ||
+		strings.Contains(normalized, "<") ||
+		len(normalized) > 240 {
+		return store.SanitizeErrorTextWithDetail(normalized)
+	}
+	return normalized
 }
 
 func pruneEmptyJSONObjectFields(payload any) (any, error) {
