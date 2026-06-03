@@ -2380,6 +2380,124 @@ paths:
       responses:
         '200':
           description: Presence updated
+  /v1/openclaw/messages/publish:
+    post:
+      summary: Retired OpenClaw publish endpoint
+      deprecated: true
+      description: |
+        Retired OpenClaw compatibility endpoint. This route always returns
+        `410 endpoint_retired`. Use `POST /v1/runtime/messages/publish`.
+      responses:
+        '410':
+          description: Endpoint retired; use `/v1/runtime/messages/publish`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRuntimeError'
+  /v1/openclaw/messages/pull:
+    get:
+      summary: Retired OpenClaw pull endpoint
+      deprecated: true
+      description: |
+        Retired OpenClaw compatibility endpoint. This route always returns
+        `410 endpoint_retired`. Use `GET /v1/runtime/messages/pull`.
+      responses:
+        '410':
+          description: Endpoint retired; use `/v1/runtime/messages/pull`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRuntimeError'
+  /v1/openclaw/messages/ack:
+    post:
+      summary: Retired OpenClaw ack endpoint
+      deprecated: true
+      description: |
+        Retired OpenClaw compatibility endpoint. This route always returns
+        `410 endpoint_retired`. Use `POST /v1/runtime/messages/ack`.
+      responses:
+        '410':
+          description: Endpoint retired; use `/v1/runtime/messages/ack`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRuntimeError'
+  /v1/openclaw/messages/nack:
+    post:
+      summary: Retired OpenClaw nack endpoint
+      deprecated: true
+      description: |
+        Retired OpenClaw compatibility endpoint. This route always returns
+        `410 endpoint_retired`. Use `POST /v1/runtime/messages/nack`.
+      responses:
+        '410':
+          description: Endpoint retired; use `/v1/runtime/messages/nack`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRuntimeError'
+  /v1/openclaw/messages/{message_id}:
+    get:
+      summary: Retired OpenClaw message status endpoint
+      deprecated: true
+      description: |
+        Retired OpenClaw compatibility endpoint. This route always returns
+        `410 endpoint_retired`. Use `GET /v1/runtime/messages/{message_id}`.
+      parameters:
+        - in: path
+          name: message_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '410':
+          description: Endpoint retired; use `/v1/runtime/messages/{message_id}`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRuntimeError'
+  /v1/openclaw/messages/ws:
+    get:
+      summary: Retired OpenClaw websocket endpoint
+      deprecated: true
+      description: |
+        Retired OpenClaw compatibility endpoint. This route always returns
+        `410 endpoint_retired`. Use `GET /v1/runtime/messages/ws`.
+      responses:
+        '410':
+          description: Endpoint retired; use `/v1/runtime/messages/ws`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRuntimeError'
+  /v1/openclaw/messages/offline:
+    post:
+      summary: Retired OpenClaw offline endpoint
+      deprecated: true
+      description: |
+        Retired OpenClaw compatibility endpoint. This route always returns
+        `410 endpoint_retired`. Use `POST /v1/runtime/messages/offline`.
+      responses:
+        '410':
+          description: Endpoint retired; use `/v1/runtime/messages/offline`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRuntimeError'
+  /v1/openclaw/messages/register-plugin:
+    post:
+      summary: Retired OpenClaw plugin registration endpoint
+      deprecated: true
+      description: |
+        Retired OpenClaw plugin registration endpoint. This route always returns
+        `410 endpoint_retired`; no generic replacement is available.
+      responses:
+        '410':
+          description: Endpoint retired; no generic replacement
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRuntimeError'
   /v1/collective/stream:
     get:
       summary: Collective realtime activity stream (WebSocket)
