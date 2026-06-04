@@ -116,7 +116,7 @@ func collectLaunchDiagnostics(lookup func(string) (string, bool)) ([]launchDiagn
 		diagnostics = append(diagnostics, warnUnset(
 			"MOLTENHUB_STORAGE_STARTUP_MODE",
 			string(store.StorageStartupModeStrict),
-			"defaulting to strict startup; configured storage dependency failures will abort launch",
+			"defaulting to strict startup; configured storage dependency failures will keep the server in startup retry until dependencies recover",
 		))
 	} else if _, err := store.ParseStorageStartupMode(raw); err != nil {
 		failures = append(failures, "MOLTENHUB_STORAGE_STARTUP_MODE")

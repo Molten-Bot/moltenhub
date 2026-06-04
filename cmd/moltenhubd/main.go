@@ -17,6 +17,8 @@ import (
 	"moltenhub/internal/store"
 )
 
+const storageStartupRetryDelay = 2 * time.Second
+
 func main() {
 	loadDotEnv(".env")
 	if err := validateLaunchConfiguration(); err != nil {
@@ -103,12 +105,27 @@ func main() {
 	}
 
 	go func() {
-		setStartupPhase("storage_hydrate")
-		controlStore, queueStore, storageHealth, storeErr := store.NewStoresFromEnvWithMode(storageStartupMode)
-		if storeErr != nil {
-			log.Fatalf("storage backend configuration error: %s", store.SanitizeErrorWithDetail(storeErr))
+		var controlStore store.ControlPlaneStore
+		var queueStore store.MessageQueueStore
+		var storageHealth store.StorageHealthStatus
+		var storeErr error
+		for attempt := 1; ; attempt++ {
+			setStartupPhase("storage_hydrate")
+			controlStore, queueStore, storageHealth, storeErr = store.NewStoresFromEnvWithMode(storageStartupMode)
+			bootstrap.SetStartupStorageHealth(storageHealth)
+			if storeErr == nil {
+				break
+			}
+			log.Printf(
+				"storage backend startup failed attempt=%d mode=%s retry_in_ms=%d error=%s",
+				attempt,
+				storageStartupMode,
+				storageStartupRetryDelay.Milliseconds(),
+				store.SanitizeErrorWithDetail(storeErr),
+			)
+			setStartupPhase("storage_retry_wait")
+			time.Sleep(storageStartupRetryDelay)
 		}
-		bootstrap.SetStartupStorageHealth(storageHealth)
 		if storageHealth.OverallStatus() != "ok" {
 			log.Printf(
 				"storage backend degraded: mode=%s state_backend=%s state_error=%q queue_backend=%s queue_error=%q",

@@ -50,7 +50,7 @@ Canonical URI authority:
   - Current S3 mode is beta and designed for a single writer instance.
 
 Startup behavior:
-- `MOLTENHUB_STORAGE_STARTUP_MODE=strict` (default): startup fails if configured storage is invalid/unreachable.
+- `MOLTENHUB_STORAGE_STARTUP_MODE=strict` (default): application readiness waits for configured storage; startup `/health` stays available and reports degraded status while storage initialization retries.
 - `MOLTENHUB_STORAGE_STARTUP_MODE=degraded`: falls back to memory for failing backends and reports failures in `/health`.
 - HTTP listener starts before S3 hydration completes.
   - Early routes while booting: `/ping`, `/health`, `/openapi.yaml`, `/openapi.md`, `/v1/ui/config`, `/v1/me`.

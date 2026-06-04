@@ -40,6 +40,46 @@ func TestBootstrapHandlerPingAndHealthBeforeReady(t *testing.T) {
 	}
 }
 
+func TestBootstrapHandlerHealthReportsStrictStartupRetry(t *testing.T) {
+	handler := newBootstrapHandler(store.StorageStartupModeStrict, "s3", "s3")
+	handler.SetStartupPhase("storage_retry_wait", time.Now().UTC())
+	handler.SetStartupStorageHealth(store.StorageHealthStatus{
+		StartupMode: store.StorageStartupModeStrict,
+		State: store.StorageBackendHealth{
+			Backend: "s3",
+			Healthy: false,
+			Error:   "state startup check request: context deadline exceeded",
+		},
+		Queue: store.StorageBackendHealth{
+			Backend: "s3",
+			Healthy: false,
+			Error:   "queue startup check request: context deadline exceeded",
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected /health 200 during strict startup retry, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode startup health: %v", err)
+	}
+	if got, _ := payload["boot_status"].(string); got != "starting" {
+		t.Fatalf("expected boot_status=starting, got %q payload=%v", got, payload)
+	}
+	if got, _ := payload["status"].(string); got != "degraded" {
+		t.Fatalf("expected status=degraded during strict startup retry, got %q payload=%v", got, payload)
+	}
+	startup, _ := payload["startup"].(map[string]any)
+	if startup == nil || startup["phase"] != "storage_retry_wait" {
+		t.Fatalf("expected startup phase storage_retry_wait, got payload=%v", payload)
+	}
+}
+
 func TestBootstrapHandlerDelegatesAfterReady(t *testing.T) {
 	handler := newBootstrapHandler(store.StorageStartupModeStrict, "memory", "memory")
 	handler.SetReady(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

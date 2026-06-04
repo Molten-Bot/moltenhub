@@ -136,6 +136,10 @@ func NewStoresFromEnvWithMode(mode StorageStartupMode) (ControlPlaneStore, Messa
 			health.State.Healthy = false
 			health.State.Error = SanitizeErrorWithDetail(stateErr)
 			if mode == StorageStartupModeStrict {
+				if queueBackend == "s3" {
+					health.Queue.Healthy = false
+					health.Queue.Error = "queue startup check skipped because state backend failed"
+				}
 				return nil, nil, health, stateErr
 			}
 			controlStore = mem
