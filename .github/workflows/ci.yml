@@ -84,6 +84,12 @@ jobs:
       - name: Run container smoke test
         run: bash scripts/release/run_container_smoke.sh moltenhub:smoke-ci
 
+      - name: Run S3 container smoke test with historical message corpus
+        env:
+          MOLTENHUB_S3_SMOKE_HISTORICAL_MESSAGES: "5000"
+          MOLTENHUB_S3_SMOKE_READY_DEADLINE_SECONDS: "15"
+        run: bash scripts/release/run_s3_container_smoke.sh moltenhub:smoke-ci 18081
+
   federation-container-smoke:
     runs-on: ubuntu-latest
     needs:
