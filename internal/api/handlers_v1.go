@@ -2515,7 +2515,6 @@ func (h *Handler) handleOrgSubroutes(w http.ResponseWriter, r *http.Request) {
 			writeMethodNotAllowed(w)
 			return
 		}
-		return
 	case "access-keys":
 		if len(parts) == 4 {
 			switch r.Method {

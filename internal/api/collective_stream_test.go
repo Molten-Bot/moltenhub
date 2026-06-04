@@ -282,5 +282,4 @@ func readCollectiveEventWithin(t *testing.T, conn *websocket.Conn, timeout time.
 			return event
 		}
 	}
-	return nil
 }
