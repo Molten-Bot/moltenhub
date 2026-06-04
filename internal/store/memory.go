@@ -69,7 +69,8 @@ const (
 )
 
 type MemoryStore struct {
-	mu sync.RWMutex
+	mu             sync.RWMutex
+	queueMetricsMu sync.RWMutex
 
 	orgs        map[string]model.Organization
 	orgByHandle map[string]string
@@ -102,6 +103,7 @@ type MemoryStore struct {
 	messageRecords         map[string]model.MessageRecord
 	messageByClientMsg     map[string]string
 	messageDeliveries      map[string]model.MessageDelivery
+	queueMetrics           model.QueueMetrics
 
 	binds      map[string]model.BindToken
 	bindByHash map[string]string
@@ -417,6 +419,7 @@ func (s *MemoryStore) DeleteOrg(orgID, actorHumanID string, isSuperAdmin bool, n
 		}
 		s.queues[queueAgentUUID] = filtered
 	}
+	s.recomputeQueueMetricsLocked()
 
 	for bindID, bind := range s.binds {
 		if bind.OrgID != orgID {
@@ -1492,6 +1495,7 @@ func (s *MemoryStore) RevokeAgent(agentUUID, actorHumanID string, now time.Time,
 		}
 		s.queues[queueAgentUUID] = filtered
 	}
+	s.recomputeQueueMetricsLocked()
 	s.appendAuditLocked(agent.OrgID, actorHumanID, "agent", "revoke", agentUUID, map[string]any{
 		"agent_id":                  agent.AgentID,
 		"revoked_agent_trust_edges": revokedTrustEdges,
@@ -1556,6 +1560,7 @@ func (s *MemoryStore) DeleteAgent(agentUUID, actorHumanID string, now time.Time,
 		}
 		s.queues[queueAgentUUID] = filtered
 	}
+	s.recomputeQueueMetricsLocked()
 
 	s.appendAuditLocked(agent.OrgID, actorHumanID, "agent", "delete", agentUUID, map[string]any{
 		"agent_id":                agent.AgentID,
@@ -3597,6 +3602,7 @@ func (s *MemoryStore) LeaseMessage(messageID, receiverAgentUUID, deliveryID stri
 	}
 	s.messageRecords[messageID] = record
 	s.messageDeliveries[deliveryID] = delivery
+	s.noteDeliveryAddedLocked(delivery)
 	if orgID := strings.TrimSpace(record.Message.ReceiverOrgID); orgID != "" {
 		details := messageAuditDetails(record.Message)
 		details["delivery_id"] = deliveryID
@@ -3620,6 +3626,7 @@ func (s *MemoryStore) AckMessageDelivery(receiverAgentUUID, deliveryID string, a
 	record, ok := s.messageRecords[delivery.MessageID]
 	if !ok {
 		delete(s.messageDeliveries, deliveryID)
+		s.noteDeliveryRemovedLocked(delivery)
 		return model.MessageRecord{}, ErrMessageNotFound
 	}
 	record.Status = model.MessageDeliveryAcked
@@ -3629,6 +3636,7 @@ func (s *MemoryStore) AckMessageDelivery(receiverAgentUUID, deliveryID string, a
 	record.LastFailureAt = nil
 	record.LastFailureReason = ""
 	delete(s.messageDeliveries, deliveryID)
+	s.noteDeliveryRemovedLocked(delivery)
 	s.messageRecords[delivery.MessageID] = record
 	s.incrementAckedLocked(record.Message.SenderOrgID, ackedAt)
 	if orgID := strings.TrimSpace(record.Message.ReceiverOrgID); orgID != "" {
@@ -3656,6 +3664,7 @@ func (s *MemoryStore) ReleaseMessageDelivery(receiverAgentUUID, deliveryID strin
 		return model.Message{}, model.MessageRecord{}, ErrMessageNotFound
 	}
 	delete(s.messageDeliveries, deliveryID)
+	s.noteDeliveryRemovedLocked(delivery)
 	record.Status = model.MessageDeliveryQueued
 	record.UpdatedAt = now
 	record.LeaseExpiresAt = nil
@@ -3695,9 +3704,11 @@ func (s *MemoryStore) ExpireMessageLeases(now time.Time) ([]model.Message, error
 		record, ok := s.messageRecords[delivery.MessageID]
 		if !ok {
 			delete(s.messageDeliveries, deliveryID)
+			s.noteDeliveryRemovedLocked(delivery)
 			continue
 		}
 		delete(s.messageDeliveries, deliveryID)
+		s.noteDeliveryRemovedLocked(delivery)
 		record.Status = model.MessageDeliveryQueued
 		record.UpdatedAt = now
 		record.LeaseExpiresAt = nil
@@ -3718,9 +3729,20 @@ func (s *MemoryStore) ExpireMessageLeases(now time.Time) ([]model.Message, error
 }
 
 func (s *MemoryStore) GetQueueMetrics() model.QueueMetrics {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.queueMetricsMu.RLock()
+	defer s.queueMetricsMu.RUnlock()
 
+	return cloneQueueMetrics(s.queueMetrics)
+}
+
+func (s *MemoryStore) recomputeQueueMetricsLocked() {
+	metrics := s.computeQueueMetricsLocked()
+	s.queueMetricsMu.Lock()
+	s.queueMetrics = metrics
+	s.queueMetricsMu.Unlock()
+}
+
+func (s *MemoryStore) computeQueueMetricsLocked() model.QueueMetrics {
 	metrics := model.QueueMetrics{}
 	for _, queue := range s.queues {
 		metrics.AvailableMessages += len(queue)
@@ -3737,6 +3759,103 @@ func (s *MemoryStore) GetQueueMetrics() model.QueueMetrics {
 		}
 	}
 	return metrics
+}
+
+func (s *MemoryStore) noteQueuedMessageAddedLocked(message model.Message) {
+	s.queueMetricsMu.Lock()
+	defer s.queueMetricsMu.Unlock()
+
+	s.queueMetrics.AvailableMessages++
+	if s.queueMetrics.OldestQueuedAt == nil || message.CreatedAt.Before(*s.queueMetrics.OldestQueuedAt) {
+		s.queueMetrics.OldestQueuedAt = timePtr(message.CreatedAt)
+	}
+}
+
+func (s *MemoryStore) noteQueuedMessageRemovedLocked(message model.Message) {
+	s.queueMetricsMu.RLock()
+	recomputeOldest := metricTimeEqual(s.queueMetrics.OldestQueuedAt, message.CreatedAt)
+	s.queueMetricsMu.RUnlock()
+
+	var oldest *time.Time
+	if recomputeOldest {
+		oldest = s.computeOldestQueuedAtLocked()
+	}
+
+	s.queueMetricsMu.Lock()
+	if s.queueMetrics.AvailableMessages > 0 {
+		s.queueMetrics.AvailableMessages--
+	}
+	if recomputeOldest {
+		s.queueMetrics.OldestQueuedAt = oldest
+	}
+	s.queueMetricsMu.Unlock()
+}
+
+func (s *MemoryStore) noteDeliveryAddedLocked(delivery model.MessageDelivery) {
+	s.queueMetricsMu.Lock()
+	defer s.queueMetricsMu.Unlock()
+
+	s.queueMetrics.LeasedMessages++
+	if s.queueMetrics.OldestLeaseExpiryAt == nil || delivery.LeaseExpiresAt.Before(*s.queueMetrics.OldestLeaseExpiryAt) {
+		s.queueMetrics.OldestLeaseExpiryAt = timePtr(delivery.LeaseExpiresAt)
+	}
+}
+
+func (s *MemoryStore) noteDeliveryRemovedLocked(delivery model.MessageDelivery) {
+	s.queueMetricsMu.RLock()
+	recomputeOldest := metricTimeEqual(s.queueMetrics.OldestLeaseExpiryAt, delivery.LeaseExpiresAt)
+	s.queueMetricsMu.RUnlock()
+
+	var oldest *time.Time
+	if recomputeOldest {
+		oldest = s.computeOldestLeaseExpiryAtLocked()
+	}
+
+	s.queueMetricsMu.Lock()
+	if s.queueMetrics.LeasedMessages > 0 {
+		s.queueMetrics.LeasedMessages--
+	}
+	if recomputeOldest {
+		s.queueMetrics.OldestLeaseExpiryAt = oldest
+	}
+	s.queueMetricsMu.Unlock()
+}
+
+func (s *MemoryStore) computeOldestQueuedAtLocked() *time.Time {
+	var oldest *time.Time
+	for _, queue := range s.queues {
+		for _, message := range queue {
+			if oldest == nil || message.CreatedAt.Before(*oldest) {
+				oldest = timePtr(message.CreatedAt)
+			}
+		}
+	}
+	return oldest
+}
+
+func (s *MemoryStore) computeOldestLeaseExpiryAtLocked() *time.Time {
+	var oldest *time.Time
+	for _, delivery := range s.messageDeliveries {
+		if oldest == nil || delivery.LeaseExpiresAt.Before(*oldest) {
+			oldest = timePtr(delivery.LeaseExpiresAt)
+		}
+	}
+	return oldest
+}
+
+func cloneQueueMetrics(metrics model.QueueMetrics) model.QueueMetrics {
+	out := metrics
+	if metrics.OldestQueuedAt != nil {
+		out.OldestQueuedAt = timePtr(*metrics.OldestQueuedAt)
+	}
+	if metrics.OldestLeaseExpiryAt != nil {
+		out.OldestLeaseExpiryAt = timePtr(*metrics.OldestLeaseExpiryAt)
+	}
+	return out
+}
+
+func metricTimeEqual(value *time.Time, target time.Time) bool {
+	return value != nil && value.Equal(target)
 }
 
 func (s *MemoryStore) EnqueuePeerOutbound(peerID, outboundID string, message model.Message, now time.Time) (model.PeerOutboundMessage, error) {
@@ -3904,6 +4023,7 @@ func (s *MemoryStore) Enqueue(_ context.Context, message model.Message) error {
 	}
 	message.ToAgentID = agent.AgentID
 	s.queues[message.ToAgentUUID] = append(s.queues[message.ToAgentUUID], message)
+	s.noteQueuedMessageAddedLocked(message)
 	return nil
 }
 
@@ -3917,6 +4037,7 @@ func (s *MemoryStore) Dequeue(_ context.Context, agentUUID string) (model.Messag
 	}
 	msg := queue[0]
 	s.queues[agentUUID] = queue[1:]
+	s.noteQueuedMessageRemovedLocked(msg)
 	return msg, true, nil
 }
 

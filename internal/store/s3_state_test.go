@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -162,6 +163,15 @@ func (f *fakeS3State) currentCounts() fakeS3Counts {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.counts
+}
+
+func mustMarshalS3StateTest(t *testing.T, value any) []byte {
+	t.Helper()
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal test s3 value: %v", err)
+	}
+	return body
 }
 
 func TestS3StateStore_ProfileAndPermissionsRoundTrip(t *testing.T) {
@@ -787,6 +797,163 @@ func TestS3StateStore_PersistsMessageRecordsAndLeases(t *testing.T) {
 	}
 }
 
+func TestS3StateStore_HydrationLoadsOnlyActiveMessageRecords(t *testing.T) {
+	fake := newFakeS3State()
+	server := fake.server("state-bucket")
+	defer server.Close()
+
+	now := time.Date(2026, 3, 6, 12, 0, 0, 0, time.UTC)
+	activeMessage := model.Message{
+		MessageID:     "active-message",
+		FromAgentUUID: "agent-a",
+		ToAgentUUID:   "agent-b",
+		SenderOrgID:   "org-a",
+		ReceiverOrgID: "org-b",
+		ContentType:   "text/plain",
+		Payload:       "active",
+		CreatedAt:     now,
+	}
+	activeRecord := model.MessageRecord{
+		Message:    activeMessage,
+		Status:     model.MessageDeliveryQueued,
+		AcceptedAt: now,
+		UpdatedAt:  now,
+	}
+
+	fake.mu.Lock()
+	fake.objects["moltenhub-state/state/queues/"+escapeKeySegment(activeMessage.ToAgentUUID)+"/"+queueMessageObjectName(activeMessage)] = mustMarshalS3StateTest(t, persistQueueMessage(activeMessage))
+	fake.objects["moltenhub-state/state/messages/"+escapeKeySegment(activeMessage.MessageID)+".json"] = mustMarshalS3StateTest(t, persistMessageRecord(activeRecord))
+	for i := 0; i < 40; i++ {
+		message := activeMessage
+		message.MessageID = fmt.Sprintf("historical-message-%02d", i)
+		message.Payload = "historical"
+		message.CreatedAt = now.Add(-time.Duration(i+1) * time.Minute)
+		record := model.MessageRecord{
+			Message:    message,
+			Status:     model.MessageDeliveryAcked,
+			AcceptedAt: message.CreatedAt,
+			UpdatedAt:  message.CreatedAt.Add(time.Second),
+			AckedAt:    timePtr(message.CreatedAt.Add(time.Second)),
+		}
+		fake.objects["moltenhub-state/state/messages/"+escapeKeySegment(message.MessageID)+".json"] = mustMarshalS3StateTest(t, persistMessageRecord(record))
+	}
+	fake.mu.Unlock()
+
+	store := newTestS3StateStore(t, server.Client(), server.URL, "state-bucket", "moltenhub-state")
+	if err := store.loadFromS3(context.Background()); err != nil {
+		t.Fatalf("loadFromS3 failed: %v", err)
+	}
+
+	if _, ok := store.MemoryStore.messageRecords[activeMessage.MessageID]; !ok {
+		t.Fatalf("expected active message record to hydrate")
+	}
+	if _, ok := store.MemoryStore.messageRecords["historical-message-00"]; ok {
+		t.Fatalf("expected historical message record to stay lazy")
+	}
+	counts := fake.currentCounts()
+	if counts.get >= 20 {
+		t.Fatalf("expected hydration not to download historical message records, got counts=%+v", counts)
+	}
+}
+
+func TestS3StateStore_GetMessageRecordLazyLoadsHistoricalRecord(t *testing.T) {
+	fake := newFakeS3State()
+	server := fake.server("state-bucket")
+	defer server.Close()
+
+	now := time.Date(2026, 3, 6, 13, 0, 0, 0, time.UTC)
+	message := model.Message{
+		MessageID:     "lazy-history-message",
+		FromAgentUUID: "agent-a",
+		ToAgentUUID:   "agent-b",
+		SenderOrgID:   "org-a",
+		ReceiverOrgID: "org-b",
+		ContentType:   "text/plain",
+		Payload:       "historical",
+		CreatedAt:     now,
+	}
+	record := model.MessageRecord{
+		Message:    message,
+		Status:     model.MessageDeliveryAcked,
+		AcceptedAt: now,
+		UpdatedAt:  now.Add(time.Second),
+		AckedAt:    timePtr(now.Add(time.Second)),
+	}
+
+	fake.mu.Lock()
+	fake.objects["moltenhub-state/state/messages/"+escapeKeySegment(message.MessageID)+".json"] = mustMarshalS3StateTest(t, persistMessageRecord(record))
+	fake.mu.Unlock()
+
+	store := newTestS3StateStore(t, server.Client(), server.URL, "state-bucket", "moltenhub-state")
+	if err := store.loadFromS3(context.Background()); err != nil {
+		t.Fatalf("loadFromS3 failed: %v", err)
+	}
+	if len(store.MemoryStore.messageRecords) != 0 {
+		t.Fatalf("expected startup not to hydrate historical messages, got %d records", len(store.MemoryStore.messageRecords))
+	}
+
+	fake.resetCounts()
+	got, err := store.GetMessageRecord(message.MessageID)
+	if err != nil {
+		t.Fatalf("GetMessageRecord lazy load failed: %v", err)
+	}
+	if got.Message.MessageID != message.MessageID || got.Status != model.MessageDeliveryAcked {
+		t.Fatalf("unexpected lazy-loaded record: %+v", got)
+	}
+	if fake.currentCounts().get != 1 {
+		t.Fatalf("expected one direct S3 get for lazy load, got counts=%+v", fake.currentCounts())
+	}
+	if _, ok := store.MemoryStore.messageRecords[message.MessageID]; !ok {
+		t.Fatalf("expected lazy-loaded record to be cached")
+	}
+}
+
+func TestS3StateStore_SkippedHistoricalMessagesAreNotDeletedByPersist(t *testing.T) {
+	fake := newFakeS3State()
+	server := fake.server("state-bucket")
+	defer server.Close()
+
+	now := time.Date(2026, 3, 6, 14, 0, 0, 0, time.UTC)
+	message := model.Message{
+		MessageID:     "preserve-history-message",
+		FromAgentUUID: "agent-a",
+		ToAgentUUID:   "agent-b",
+		SenderOrgID:   "org-a",
+		ReceiverOrgID: "org-b",
+		ContentType:   "text/plain",
+		Payload:       "historical",
+		CreatedAt:     now,
+	}
+	record := model.MessageRecord{
+		Message:    message,
+		Status:     model.MessageDeliveryAcked,
+		AcceptedAt: now,
+		UpdatedAt:  now.Add(time.Second),
+		AckedAt:    timePtr(now.Add(time.Second)),
+	}
+	historicalKey := "moltenhub-state/state/messages/" + escapeKeySegment(message.MessageID) + ".json"
+
+	fake.mu.Lock()
+	fake.objects[historicalKey] = mustMarshalS3StateTest(t, persistMessageRecord(record))
+	fake.mu.Unlock()
+
+	store := newTestS3StateStore(t, server.Client(), server.URL, "state-bucket", "moltenhub-state")
+	if err := store.loadFromS3(context.Background()); err != nil {
+		t.Fatalf("loadFromS3 failed: %v", err)
+	}
+	ids := &idGen{}
+	if _, err := store.UpsertHuman("dev", "preserve-sub", "preserve@a.test", true, now, ids.Next); err != nil {
+		t.Fatalf("UpsertHuman failed: %v", err)
+	}
+
+	fake.mu.Lock()
+	_, exists := fake.objects[historicalKey]
+	fake.mu.Unlock()
+	if !exists {
+		t.Fatalf("expected skipped historical message object to remain in S3")
+	}
+}
+
 func TestS3StateStore_IncrementalPersistAvoidsFullResync(t *testing.T) {
 	fake := newFakeS3State()
 	server := fake.server("state-bucket")
@@ -1038,6 +1205,45 @@ func TestS3StateStore_ExpireMessageLeasesUsesBestEffortPersistence(t *testing.T)
 	}
 	if record.Status != model.MessageDeliveryQueued {
 		t.Fatalf("expected in-memory record to be queued after expiry, got %q", record.Status)
+	}
+}
+
+func TestS3StateStore_GetQueueMetricsDoesNotWaitForSlowPersist(t *testing.T) {
+	fake := newFakeS3State()
+	server := fake.server("state-bucket")
+	defer server.Close()
+
+	store := newTestS3StateStore(t, server.Client(), server.URL, "state-bucket", "moltenhub-state")
+	store.persistTimeout = 2 * time.Second
+	fake.setPutDelay(500 * time.Millisecond)
+
+	done := make(chan error, 1)
+	go func() {
+		id := &idGen{}
+		_, err := store.UpsertHuman("dev", "metrics-sub", "metrics@a.test", true, time.Now().UTC(), id.Next)
+		done <- err
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if fake.currentCounts().put > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for slow persist to start")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	start := time.Now()
+	_ = store.GetQueueMetrics()
+	elapsed := time.Since(start)
+	if elapsed > 150*time.Millisecond {
+		t.Fatalf("expected GetQueueMetrics not to wait for slow persist, took %s", elapsed)
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("UpsertHuman failed: %v", err)
 	}
 }
 

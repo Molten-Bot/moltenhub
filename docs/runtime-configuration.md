@@ -50,7 +50,7 @@ Canonical URI authority:
   - Current S3 mode is beta and designed for a single writer instance.
 
 Startup behavior:
-- `MOLTENHUB_STORAGE_STARTUP_MODE=strict` (default): startup fails if configured storage is invalid/unreachable.
+- `MOLTENHUB_STORAGE_STARTUP_MODE=strict` (default): application readiness waits for configured storage; startup `/health` stays available and reports degraded status while storage initialization retries.
 - `MOLTENHUB_STORAGE_STARTUP_MODE=degraded`: falls back to memory for failing backends and reports failures in `/health`.
 - HTTP listener starts before S3 hydration completes.
   - Early routes while booting: `/ping`, `/health`, `/openapi.yaml`, `/openapi.md`, `/v1/ui/config`, `/v1/me`.
@@ -61,6 +61,7 @@ S3 state hydration tuning:
 - `MOLTENHUB_S3_HYDRATION_TIMEOUT_SEC=20` (default): upper bound for strict startup hydration.
 - `MOLTENHUB_S3_HYDRATION_LIST_CONCURRENCY=6` (default): parallel list workers during hydration.
 - `MOLTENHUB_S3_HYDRATION_GET_CONCURRENCY=24` (default): parallel object fetch workers during hydration.
+- S3 startup hydrates control-plane state plus active queue/lease records only; historical message records stay in S3 and are loaded by ID when status/history is requested.
 
 ## Queue Backend
 

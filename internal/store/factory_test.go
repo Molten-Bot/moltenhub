@@ -279,6 +279,41 @@ func TestNewStoresFromEnv_StrictFailsWhenS3StateStartupWriteCheckFails(t *testin
 	}
 }
 
+func TestNewStoresFromEnvWithMode_StrictMarksSkippedS3QueueUnhealthy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path == "state-bucket" && r.Method == http.MethodGet && r.URL.Query().Get("list-type") == "2" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `temporary outage`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	t.Setenv("MOLTENHUB_STATE_BACKEND", "s3")
+	t.Setenv("MOLTENHUB_QUEUE_BACKEND", "s3")
+	t.Setenv("MOLTENHUB_STATE_S3_ENDPOINT", server.URL)
+	t.Setenv("MOLTENHUB_STATE_S3_BUCKET", "state-bucket")
+	t.Setenv("MOLTENHUB_STATE_S3_PREFIX", "moltenhub-state")
+	t.Setenv("MOLTENHUB_STATE_S3_PATH_STYLE", "true")
+	t.Setenv("MOLTENHUB_QUEUE_S3_ENDPOINT", server.URL)
+	t.Setenv("MOLTENHUB_QUEUE_S3_BUCKET", "queue-bucket")
+	t.Setenv("MOLTENHUB_QUEUE_S3_PREFIX", "moltenhub-queue")
+	t.Setenv("MOLTENHUB_QUEUE_S3_PATH_STYLE", "true")
+
+	_, _, health, err := NewStoresFromEnvWithMode(StorageStartupModeStrict)
+	if err == nil {
+		t.Fatalf("expected strict startup to fail when s3 state fails")
+	}
+	if health.Queue.Healthy {
+		t.Fatalf("expected skipped s3 queue check to be reported unhealthy")
+	}
+	if !strings.Contains(health.Queue.Error, "skipped") {
+		t.Fatalf("expected skipped queue health error, got %q", health.Queue.Error)
+	}
+}
+
 func TestNewStoresFromEnvWithMode_DegradedFallbackForS3State(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/")
