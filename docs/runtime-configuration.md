@@ -61,6 +61,7 @@ S3 state hydration tuning:
 - `MOLTENHUB_S3_HYDRATION_TIMEOUT_SEC=20` (default): upper bound for strict startup hydration.
 - `MOLTENHUB_S3_HYDRATION_LIST_CONCURRENCY=6` (default): parallel list workers during hydration.
 - `MOLTENHUB_S3_HYDRATION_GET_CONCURRENCY=24` (default): parallel object fetch workers during hydration.
+- S3 startup hydrates control-plane state plus active queue/lease records only; historical message records stay in S3 and are loaded by ID when status/history is requested.
 
 ## Queue Backend
 
