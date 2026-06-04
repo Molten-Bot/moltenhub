@@ -53,6 +53,105 @@ func mustCreateOrg(t *testing.T, mem *MemoryStore, ids *seqID, creator model.Hum
 	return org
 }
 
+func TestMemoryStoreQueueMetricsSnapshotTracksMessageLifecycle(t *testing.T) {
+	now := time.Date(2026, 3, 8, 10, 0, 0, 0, time.UTC)
+	ids := &seqID{}
+	mem := NewMemoryStore()
+
+	alice := mustCreateHuman(t, mem, ids, "alice-metrics", "alice-metrics@a.test", "alice-metrics", now)
+	org := mustCreateOrg(t, mem, ids, alice, "metrics-org", "Metrics Org", now)
+	owner := alice.HumanID
+	agentA, err := mem.RegisterAgent(org.OrgID, "metrics-a", &owner, "metrics-token-a", alice.HumanID, now, false)
+	if err != nil {
+		t.Fatalf("RegisterAgent(agent-a) failed: %v", err)
+	}
+	agentB, err := mem.RegisterAgent(org.OrgID, "metrics-b", &owner, "metrics-token-b", alice.HumanID, now, false)
+	if err != nil {
+		t.Fatalf("RegisterAgent(agent-b) failed: %v", err)
+	}
+
+	oldMessage := model.Message{
+		MessageID:     "metrics-old",
+		FromAgentUUID: agentA.AgentUUID,
+		ToAgentUUID:   agentB.AgentUUID,
+		SenderOrgID:   org.OrgID,
+		ReceiverOrgID: org.OrgID,
+		ContentType:   "text/plain",
+		Payload:       "old",
+		CreatedAt:     now.Add(time.Minute),
+	}
+	newMessage := oldMessage
+	newMessage.MessageID = "metrics-new"
+	newMessage.Payload = "new"
+	newMessage.CreatedAt = now.Add(2 * time.Minute)
+
+	for _, message := range []model.Message{oldMessage, newMessage} {
+		if _, _, err := mem.CreateOrGetMessageRecord(message, message.CreatedAt); err != nil {
+			t.Fatalf("CreateOrGetMessageRecord(%s) failed: %v", message.MessageID, err)
+		}
+		if err := mem.Enqueue(context.Background(), message); err != nil {
+			t.Fatalf("Enqueue(%s) failed: %v", message.MessageID, err)
+		}
+	}
+
+	metrics := mem.GetQueueMetrics()
+	if metrics.AvailableMessages != 2 || metrics.OldestQueuedAt == nil || !metrics.OldestQueuedAt.Equal(oldMessage.CreatedAt) {
+		t.Fatalf("unexpected queued metrics after enqueue: %+v", metrics)
+	}
+
+	dequeued, ok, err := mem.Dequeue(context.Background(), agentB.AgentUUID)
+	if err != nil || !ok || dequeued.MessageID != oldMessage.MessageID {
+		t.Fatalf("Dequeue got message=%+v ok=%v err=%v", dequeued, ok, err)
+	}
+	metrics = mem.GetQueueMetrics()
+	if metrics.AvailableMessages != 1 || metrics.OldestQueuedAt == nil || !metrics.OldestQueuedAt.Equal(newMessage.CreatedAt) {
+		t.Fatalf("unexpected queued metrics after dequeue: %+v", metrics)
+	}
+
+	leaseExpiresAt := now.Add(10 * time.Minute)
+	delivery, _, err := mem.LeaseMessage(oldMessage.MessageID, agentB.AgentUUID, "metrics-delivery-1", now.Add(3*time.Minute), leaseExpiresAt)
+	if err != nil {
+		t.Fatalf("LeaseMessage failed: %v", err)
+	}
+	metrics = mem.GetQueueMetrics()
+	if metrics.LeasedMessages != 1 || metrics.OldestLeaseExpiryAt == nil || !metrics.OldestLeaseExpiryAt.Equal(leaseExpiresAt) {
+		t.Fatalf("unexpected leased metrics after lease: %+v", metrics)
+	}
+
+	if _, err := mem.AckMessageDelivery(agentB.AgentUUID, delivery.DeliveryID, now.Add(4*time.Minute)); err != nil {
+		t.Fatalf("AckMessageDelivery failed: %v", err)
+	}
+	metrics = mem.GetQueueMetrics()
+	if metrics.LeasedMessages != 0 || metrics.OldestLeaseExpiryAt != nil {
+		t.Fatalf("unexpected leased metrics after ack: %+v", metrics)
+	}
+
+	dequeued, ok, err = mem.Dequeue(context.Background(), agentB.AgentUUID)
+	if err != nil || !ok || dequeued.MessageID != newMessage.MessageID {
+		t.Fatalf("Dequeue second message got message=%+v ok=%v err=%v", dequeued, ok, err)
+	}
+	metrics = mem.GetQueueMetrics()
+	if metrics.AvailableMessages != 0 || metrics.OldestQueuedAt != nil {
+		t.Fatalf("unexpected queued metrics after second dequeue: %+v", metrics)
+	}
+
+	expiredDelivery, _, err := mem.LeaseMessage(newMessage.MessageID, agentB.AgentUUID, "metrics-delivery-2", now.Add(5*time.Minute), now.Add(6*time.Minute))
+	if err != nil {
+		t.Fatalf("LeaseMessage for expiry failed: %v", err)
+	}
+	expired, err := mem.ExpireMessageLeases(expiredDelivery.LeaseExpiresAt.Add(time.Second))
+	if err != nil {
+		t.Fatalf("ExpireMessageLeases failed: %v", err)
+	}
+	if len(expired) != 1 || expired[0].MessageID != newMessage.MessageID {
+		t.Fatalf("expected expired message %q, got %+v", newMessage.MessageID, expired)
+	}
+	metrics = mem.GetQueueMetrics()
+	if metrics.LeasedMessages != 0 || metrics.OldestLeaseExpiryAt != nil {
+		t.Fatalf("unexpected leased metrics after expiry: %+v", metrics)
+	}
+}
+
 func TestMemoryStoreAgentCanonicalURIAndScopedUniqueness(t *testing.T) {
 	now := time.Date(2026, 3, 5, 0, 0, 0, 0, time.UTC)
 	ids := &seqID{}

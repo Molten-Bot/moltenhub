@@ -1041,6 +1041,45 @@ func TestS3StateStore_ExpireMessageLeasesUsesBestEffortPersistence(t *testing.T)
 	}
 }
 
+func TestS3StateStore_GetQueueMetricsDoesNotWaitForSlowPersist(t *testing.T) {
+	fake := newFakeS3State()
+	server := fake.server("state-bucket")
+	defer server.Close()
+
+	store := newTestS3StateStore(t, server.Client(), server.URL, "state-bucket", "moltenhub-state")
+	store.persistTimeout = 2 * time.Second
+	fake.setPutDelay(500 * time.Millisecond)
+
+	done := make(chan error, 1)
+	go func() {
+		id := &idGen{}
+		_, err := store.UpsertHuman("dev", "metrics-sub", "metrics@a.test", true, time.Now().UTC(), id.Next)
+		done <- err
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if fake.currentCounts().put > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for slow persist to start")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	start := time.Now()
+	_ = store.GetQueueMetrics()
+	elapsed := time.Since(start)
+	if elapsed > 150*time.Millisecond {
+		t.Fatalf("expected GetQueueMetrics not to wait for slow persist, took %s", elapsed)
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("UpsertHuman failed: %v", err)
+	}
+}
+
 func TestS3StateStore_SetAgentPresenceThrottlesHeartbeatPersistence(t *testing.T) {
 	fake := newFakeS3State()
 	server := fake.server("state-bucket")

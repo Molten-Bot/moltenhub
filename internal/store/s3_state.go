@@ -1659,6 +1659,7 @@ func (s *s3StateStore) loadFromS3(ctx context.Context) error {
 		loaded.auditByOrg[orgID] = events
 	}
 	rebuildStateIndexesLocked(loaded)
+	loaded.recomputeQueueMetricsLocked()
 
 	s.MemoryStore = loaded
 	s.persistedObjects = flattenS3Objects(s.buildDesiredObjects())
@@ -2304,9 +2305,6 @@ func (s *s3StateStore) ExpireMessageLeases(now time.Time) ([]model.Message, erro
 }
 
 func (s *s3StateStore) GetQueueMetrics() model.QueueMetrics {
-	s.persistMu.Lock()
-	defer s.persistMu.Unlock()
-
 	return s.MemoryStore.GetQueueMetrics()
 }
 
