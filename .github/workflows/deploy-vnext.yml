@@ -162,3 +162,9 @@ jobs:
 
       - name: Run container smoke test
         run: bash scripts/release/run_container_smoke.sh "${{ needs.build-and-push.outputs.image_ref }}"
+
+      - name: Run S3 container smoke test with historical message corpus
+        env:
+          MOLTENHUB_S3_SMOKE_HISTORICAL_MESSAGES: "5000"
+          MOLTENHUB_S3_SMOKE_READY_DEADLINE_SECONDS: "15"
+        run: bash scripts/release/run_s3_container_smoke.sh "${{ needs.build-and-push.outputs.image_ref }}" 18081

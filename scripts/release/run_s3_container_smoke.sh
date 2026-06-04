@@ -28,11 +28,27 @@ PY
 fi
 STATE_BUCKET="${MOLTENHUB_STATE_S3_BUCKET:-moltenhub-state-smoke}"
 QUEUE_BUCKET="${MOLTENHUB_QUEUE_S3_BUCKET:-moltenhub-queue-smoke}"
+HISTORICAL_MESSAGE_COUNT="${MOLTENHUB_S3_SMOKE_HISTORICAL_MESSAGES:-0}"
+READY_DEADLINE_SECONDS="${MOLTENHUB_S3_SMOKE_READY_DEADLINE_SECONDS:-0}"
+SEED_DIR=""
+HUB_STARTED_AT=""
+
+validate_non_negative_integer() {
+  local name="$1"
+  local value="$2"
+  if [[ ! "${value}" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: ${name} must be a non-negative integer, got ${value}" >&2
+    exit 1
+  fi
+}
 
 cleanup() {
   docker rm -f "${HUB_CONTAINER}" >/dev/null 2>&1 || true
   docker rm -f "${MINIO_CONTAINER}" >/dev/null 2>&1 || true
   docker network rm "${NETWORK_NAME}" >/dev/null 2>&1 || true
+  if [[ -n "${SEED_DIR}" ]]; then
+    rm -rf "${SEED_DIR}" >/dev/null 2>&1 || true
+  fi
 }
 
 wait_for_minio() {
@@ -57,6 +73,73 @@ create_buckets() {
   docker run --rm --network "${NETWORK_NAME}" \
     -e "MC_HOST_smoke=http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@${MINIO_CONTAINER}:9000" \
     "${MC_IMAGE}" mb --ignore-existing "smoke/${STATE_BUCKET}" "smoke/${QUEUE_BUCKET}" >/dev/null
+}
+
+seed_historical_message_records() {
+  if (( HISTORICAL_MESSAGE_COUNT <= 0 )); then
+    return 0
+  fi
+
+  echo "Seeding ${HISTORICAL_MESSAGE_COUNT} historical S3 message records"
+  SEED_DIR="$(mktemp -d)"
+  mkdir -p "${SEED_DIR}/messages"
+  python3 - "${SEED_DIR}/messages" "${HISTORICAL_MESSAGE_COUNT}" <<'PY'
+import json
+import pathlib
+import sys
+from datetime import datetime, timedelta, timezone
+
+out_dir = pathlib.Path(sys.argv[1])
+count = int(sys.argv[2])
+base = datetime(2026, 3, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+for i in range(count):
+    message_id = f"historical-smoke-{i:06d}"
+    created = base + timedelta(seconds=i)
+    updated = created + timedelta(seconds=1)
+    body = {
+        "message": {
+            "message_id": message_id,
+            "from_agent_uuid": "historical-smoke-agent-a",
+            "to_agent_uuid": "historical-smoke-agent-b",
+            "sender_org_id": "historical-smoke-org-a",
+            "receiver_org_id": "historical-smoke-org-b",
+            "content_type": "text/plain",
+            "payload": "historical smoke payload",
+            "created_at": created.isoformat().replace("+00:00", "Z"),
+        },
+        "status": "acked",
+        "accepted_at": created.isoformat().replace("+00:00", "Z"),
+        "updated_at": updated.isoformat().replace("+00:00", "Z"),
+        "acked_at": updated.isoformat().replace("+00:00", "Z"),
+        "delivery_attempts": 1,
+        "requeue_count": 0,
+        "idempotent_replays": 0,
+    }
+    (out_dir / f"{message_id}.json").write_text(json.dumps(body, separators=(",", ":")), encoding="utf-8")
+PY
+
+  docker run --rm --network "${NETWORK_NAME}" \
+    -e "MC_HOST_smoke=http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@${MINIO_CONTAINER}:9000" \
+    -v "${SEED_DIR}:/seed:ro" \
+    "${MC_IMAGE}" cp --recursive "/seed/messages/" "smoke/${STATE_BUCKET}/moltenhub-state/state/messages/" >/dev/null
+}
+
+assert_ready_deadline() {
+  if (( READY_DEADLINE_SECONDS <= 0 )) || [[ -z "${HUB_STARTED_AT}" ]]; then
+    return 0
+  fi
+
+  local now
+  local elapsed
+  now="$(date +%s)"
+  elapsed=$((now - HUB_STARTED_AT))
+  if (( elapsed > READY_DEADLINE_SECONDS )); then
+    echo "ERROR: S3 smoke target became ready after ${elapsed}s; deadline is ${READY_DEADLINE_SECONDS}s" >&2
+    docker logs "${HUB_CONTAINER}" >&2 || true
+    exit 1
+  fi
+  echo "S3 smoke target ready in ${elapsed}s"
 }
 
 wait_for_ping() {
@@ -109,6 +192,7 @@ PY
       then
         rm -f "${body_file}"
         trap cleanup EXIT
+        assert_ready_deadline
         return 0
       fi
     fi
@@ -127,6 +211,8 @@ PY
 }
 
 trap cleanup EXIT
+validate_non_negative_integer MOLTENHUB_S3_SMOKE_HISTORICAL_MESSAGES "${HISTORICAL_MESSAGE_COUNT}"
+validate_non_negative_integer MOLTENHUB_S3_SMOKE_READY_DEADLINE_SECONDS "${READY_DEADLINE_SECONDS}"
 cleanup
 docker network create "${NETWORK_NAME}" >/dev/null
 
@@ -139,6 +225,7 @@ docker run -d \
 
 wait_for_minio
 create_buckets
+seed_historical_message_records
 
 docker run -d \
   --name "${HUB_CONTAINER}" \
@@ -157,6 +244,7 @@ docker run -d \
   -e MOLTENHUB_QUEUE_S3_ACCESS_KEY_ID="${MINIO_ROOT_USER}" \
   -e MOLTENHUB_QUEUE_S3_SECRET_ACCESS_KEY="${MINIO_ROOT_PASSWORD}" \
   "${IMAGE_REF}" >/dev/null
+HUB_STARTED_AT="$(date +%s)"
 
 wait_for_ping
 wait_for_ready_health

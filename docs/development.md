@@ -89,6 +89,13 @@ docker build -t moltenhub:local .
 bash scripts/release/run_s3_container_smoke.sh moltenhub:local
 ```
 
+Seed historical S3 message records and assert the container reaches ready health quickly:
+
+```bash
+docker build -t moltenhub:local .
+MOLTENHUB_S3_SMOKE_HISTORICAL_MESSAGES=5000 MOLTENHUB_S3_SMOKE_READY_DEADLINE_SECONDS=15 bash scripts/release/run_s3_container_smoke.sh moltenhub:local
+```
+
 Run federation smoke tests (two local containers, trust setup, bridged messaging):
 
 ```bash
