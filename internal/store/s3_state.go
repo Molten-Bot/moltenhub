@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -1231,7 +1232,6 @@ func (s *s3StateStore) loadFromS3(ctx context.Context) error {
 	pAudit := s.prefixed("state/audit")
 	pPersonalOrgs := s.prefixed("state/personal_orgs")
 	pQueues := s.prefixed("state/queues")
-	pMessages := s.prefixed("state/messages")
 	pMessageLeases := s.prefixed("state/message_leases")
 	pPeers := s.prefixed("state/peers")
 	pRemoteOrgTrusts := s.prefixed("state/remote_org_trusts")
@@ -1257,7 +1257,6 @@ func (s *s3StateStore) loadFromS3(ctx context.Context) error {
 		pAudit,
 		pPersonalOrgs,
 		pQueues,
-		pMessages,
 		pMessageLeases,
 		pPeers,
 		pRemoteOrgTrusts,
@@ -1565,19 +1564,6 @@ func (s *s3StateStore) loadFromS3(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	if err := s.loadTypedObjects(ctx, pMessages, func(key string, body []byte) error {
-		var value s3PersistMessageRecord
-		if err := json.Unmarshal(body, &value); err != nil {
-			return err
-		}
-		record := value.toModel()
-		if strings.TrimSpace(record.Message.MessageID) != "" {
-			loaded.messageRecords[record.Message.MessageID] = record
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
 	if err := s.loadTypedObjects(ctx, pMessageLeases, func(key string, body []byte) error {
 		var value s3PersistMessageDelivery
 		if err := json.Unmarshal(body, &value); err != nil {
@@ -1589,6 +1575,9 @@ func (s *s3StateStore) loadFromS3(ctx context.Context) error {
 		}
 		return nil
 	}); err != nil {
+		return err
+	}
+	if err := s.loadActiveMessageRecords(ctx, loaded); err != nil {
 		return err
 	}
 	if err := s.loadTypedObjects(ctx, pPeers, func(key string, body []byte) error {
@@ -1663,6 +1652,147 @@ func (s *s3StateStore) loadFromS3(ctx context.Context) error {
 
 	s.MemoryStore = loaded
 	s.persistedObjects = flattenS3Objects(s.buildDesiredObjects())
+	return nil
+}
+
+func (s *s3StateStore) loadActiveMessageRecords(ctx context.Context, loaded *MemoryStore) error {
+	messageIDs := make(map[string]struct{})
+	for _, queue := range loaded.queues {
+		for _, message := range queue {
+			if messageID := strings.TrimSpace(message.MessageID); messageID != "" {
+				messageIDs[messageID] = struct{}{}
+			}
+		}
+	}
+	for _, delivery := range loaded.messageDeliveries {
+		if messageID := strings.TrimSpace(delivery.MessageID); messageID != "" {
+			messageIDs[messageID] = struct{}{}
+		}
+	}
+	if len(messageIDs) == 0 {
+		return nil
+	}
+
+	ids := make([]string, 0, len(messageIDs))
+	for messageID := range messageIDs {
+		ids = append(ids, messageID)
+	}
+	sort.Strings(ids)
+
+	getConcurrency := s.getConcurrency
+	if getConcurrency <= 0 {
+		getConcurrency = defaultS3StateGetConcurrency
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	jobs := make(chan string)
+	var (
+		firstErr error
+		errMu    sync.Mutex
+		loadedMu sync.Mutex
+		wg       sync.WaitGroup
+	)
+	setErr := func(err error) {
+		if err == nil {
+			return
+		}
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+			cancel()
+		}
+		errMu.Unlock()
+	}
+
+	for i := 0; i < getConcurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for messageID := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				record, _, found, err := s.fetchMessageRecord(ctx, messageID)
+				if err != nil {
+					setErr(fmt.Errorf("get active message record %s: %w", messageID, err))
+					continue
+				}
+				if !found {
+					continue
+				}
+				loadedMu.Lock()
+				cacheMessageRecordLocked(loaded, record)
+				loadedMu.Unlock()
+			}
+		}()
+	}
+
+sendLoop:
+	for _, messageID := range ids {
+		select {
+		case jobs <- messageID:
+		case <-ctx.Done():
+			break sendLoop
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	return nil
+}
+
+func (s *s3StateStore) fetchMessageRecord(ctx context.Context, messageID string) (model.MessageRecord, []byte, bool, error) {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return model.MessageRecord{}, nil, false, nil
+	}
+	body, found, err := s.getObject(ctx, s.messageRecordObjectKey(messageID))
+	if err != nil || !found {
+		return model.MessageRecord{}, nil, found, err
+	}
+	var value s3PersistMessageRecord
+	if err := json.Unmarshal(body, &value); err != nil {
+		return model.MessageRecord{}, nil, false, err
+	}
+	record := value.toModel()
+	if strings.TrimSpace(record.Message.MessageID) == "" {
+		return model.MessageRecord{}, nil, false, nil
+	}
+	return record, body, true, nil
+}
+
+func cacheMessageRecordLocked(mem *MemoryStore, record model.MessageRecord) {
+	messageID := strings.TrimSpace(record.Message.MessageID)
+	if messageID == "" {
+		return
+	}
+	mem.messageRecords[messageID] = record
+	if record.Message.ClientMsgID != nil {
+		mem.messageByClientMsg[messageClientKey(record.Message.FromAgentUUID, *record.Message.ClientMsgID)] = messageID
+	}
+}
+
+func (s *s3StateStore) cacheMessageRecord(record model.MessageRecord) {
+	s.MemoryStore.mu.Lock()
+	defer s.MemoryStore.mu.Unlock()
+	cacheMessageRecordLocked(s.MemoryStore, record)
+}
+
+func (s *s3StateStore) loadMessageRecordIntoMemory(ctx context.Context, messageID string) error {
+	opCtx, cancel := s.persistOperationContext(ctx)
+	defer cancel()
+
+	record, _, found, err := s.fetchMessageRecord(opCtx, messageID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrMessageNotFound
+	}
+	s.cacheMessageRecord(record)
 	return nil
 }
 
@@ -2241,23 +2371,49 @@ func (s *s3StateStore) AbortMessageRecord(messageID string) error {
 }
 
 func (s *s3StateStore) GetMessageRecord(messageID string) (model.MessageRecord, error) {
-	s.persistMu.Lock()
-	defer s.persistMu.Unlock()
+	record, err := s.MemoryStore.GetMessageRecord(messageID)
+	if err == nil {
+		return record, nil
+	}
+	if !errors.Is(err, ErrMessageNotFound) {
+		return model.MessageRecord{}, err
+	}
 
-	return s.MemoryStore.GetMessageRecord(messageID)
+	ctx, cancel := s.persistOperationContext(context.Background())
+	defer cancel()
+	record, _, found, err := s.fetchMessageRecord(ctx, messageID)
+	if err != nil {
+		return model.MessageRecord{}, err
+	}
+	if !found {
+		return model.MessageRecord{}, ErrMessageNotFound
+	}
+	s.cacheMessageRecord(record)
+	return record, nil
 }
 
 func (s *s3StateStore) LeaseMessage(messageID, receiverAgentUUID, deliveryID string, leasedAt, leaseExpiresAt time.Time) (model.MessageDelivery, model.MessageRecord, error) {
 	s.persistMu.Lock()
-	defer s.persistMu.Unlock()
 
 	delivery, record, err := s.MemoryStore.LeaseMessage(messageID, receiverAgentUUID, deliveryID, leasedAt, leaseExpiresAt)
+	if errors.Is(err, ErrMessageNotFound) {
+		s.persistMu.Unlock()
+		loadErr := s.loadMessageRecordIntoMemory(context.Background(), messageID)
+		if loadErr != nil {
+			return model.MessageDelivery{}, model.MessageRecord{}, loadErr
+		}
+		s.persistMu.Lock()
+		delivery, record, err = s.MemoryStore.LeaseMessage(messageID, receiverAgentUUID, deliveryID, leasedAt, leaseExpiresAt)
+	}
 	if err != nil {
+		s.persistMu.Unlock()
 		return model.MessageDelivery{}, model.MessageRecord{}, err
 	}
 	if err := s.persistAll(context.Background()); err != nil {
+		s.persistMu.Unlock()
 		return model.MessageDelivery{}, model.MessageRecord{}, err
 	}
+	s.persistMu.Unlock()
 	return delivery, record, nil
 }
 
@@ -2387,6 +2543,11 @@ func (s *s3StateStore) presenceObjectKey(agentUUID string) string {
 func (s *s3StateStore) humanPresenceObjectKey(humanID string) string {
 	prefix := s.prefixed("state/human_presence")
 	return s.objectKey(prefix, escapeKeySegment(humanID)+".json")
+}
+
+func (s *s3StateStore) messageRecordObjectKey(messageID string) string {
+	prefix := s.prefixed("state/messages")
+	return s.objectKey(prefix, escapeKeySegment(messageID)+".json")
 }
 
 func trimObjectKeyPrefix(key, prefix string) (string, bool) {
